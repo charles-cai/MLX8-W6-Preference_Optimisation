@@ -1,0 +1,59 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug qwen3_nano_tests.py",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/.charles/nano-vllm-qwen3/qwen3_nano_tests.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}/.charles/nano-vllm-qwen3",
+      "python": "${workspaceFolder}/.charles/nano-vllm-qwen3/.venv/bin/python"
+    },
+    {
+      "name": "Debug dataset_unified.py",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/.charles/trainings/dataset_unified.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}/.charles/trainings",
+      "python": "${workspaceFolder}/.charles/.venv/bin/python"
+    },
+    {
+      "name": "Debug model.py",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/.charles/trainings/model.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}/.charles/trainings",
+      "python": "${workspaceFolder}/.charles/.venv/bin/python"
+    },
+    {
+      "name": "Debug train_full.py",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/.charles/trainings/train_full.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}/.charles/trainings",
+      "python": "${workspaceFolder}/.charles/.venv/bin/python"
+    },
+    {
+      "name": "Debug train_lora.py",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/.charles/trainings/train_lora.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}/.charles/trainings",
+      "python": "${workspaceFolder}/.charles/.venv/bin/python"
+    },
+    {
+      "name": "Debug evaluatepy",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/.charles/trainings/evaluate.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}/.charles/trainings",
+      "python": "${workspaceFolder}/.charles/.venv/bin/python"
+    }
+  ]
+}

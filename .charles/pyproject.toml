@@ -1,0 +1,17 @@
+[project]
+name = "mlx8-w6-preference-optimization"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "accelerate>=1.8.1",
+    "bitsandbytes>=0.46.1",
+    "colorlog>=6.9.0",
+    "datasets>=4.0.0",
+    "peft>=0.16.0",
+    "torch>=2.7.1",
+    "tqdm>=4.67.1",
+    "transformers>=4.53.2",
+    "trl>=0.19.1",
+]
