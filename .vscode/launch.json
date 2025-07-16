@@ -11,10 +11,10 @@
       "python": "${workspaceFolder}/.charles/nano-vllm-qwen3/.venv/bin/python"
     },
     {
-      "name": "Debug dataset_unified.py",
+      "name": "Debug data_prep_unified.py",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/.charles/trainings/dataset_unified.py",
+      "program": "${workspaceFolder}/.charles/trainings/data_prep_unified.py",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}/.charles/trainings",
       "python": "${workspaceFolder}/.charles/.venv/bin/python"
@@ -38,19 +38,19 @@
       "python": "${workspaceFolder}/.charles/.venv/bin/python"
     },
     {
-      "name": "Debug train_lora.py",
+      "name": "Debug eval",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/.charles/trainings/train_lora.py",
+      "program": "${workspaceFolder}/.charles/trainings/eval.py",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}/.charles/trainings",
       "python": "${workspaceFolder}/.charles/.venv/bin/python"
     },
     {
-      "name": "Debug evaluatepy",
+      "name": "Debug train_dpo_qlora",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/.charles/trainings/evaluate.py",
+      "program": "${workspaceFolder}/.charles/trainings/train_dpo_qlora.py",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}/.charles/trainings",
       "python": "${workspaceFolder}/.charles/.venv/bin/python"

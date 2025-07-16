@@ -1,20 +1,21 @@
 # /qwen_finetuning_project/evaluate.py
 
 import torch
-import evaluate
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
+import evaluate
 
 # Import our data preparation function
-from data_prep import load_and_prepare_datasets
+from data_prep_unified import load_and_prepare_datasets
 from logger_utils import setup_logger
 
 # --- Configuration ---
 # Path to the final model you want to evaluate
 # This could be the full-tuned one or the merged QLoRA one
-FINAL_MODEL_PATH = "./qwen2_0.5b_summarizer_qlora_merged" 
+FINAL_MODEL_PATH = "./.data/sft_full_results" 
 DATASET_NAME = "CarperAI/openai_summarize_comparisons"
-NUM_TEST_SAMPLES = 1000 # Evaluate on a subset of the test set for speed. Use len(test_dataset) for full eval.
+NUM_TEST_SAMPLES = 20 # 1000 Evaluate on a subset of the test set for speed. Use len(test_dataset) for full eval.
+NUM_SAMPLES_TO_SHOW = 20
 
 if __name__ == "__main__":
     logger = setup_logger("evaluation_script")
@@ -45,6 +46,10 @@ if __name__ == "__main__":
     predictions = []
     references = []
 
+    # Show sample results for the first few examples
+
+    shown = 0
+
     for sample in tqdm(test_dataset):
         # We use the prompt and the 'chosen' summary as the ground truth reference
         prompt_text = sample['prompt'] + "\n\nSummary:\n"
@@ -55,7 +60,7 @@ if __name__ == "__main__":
         with torch.no_grad():
             output_ids = model.generate(
                 **inputs, 
-                max_new_tokens=150, # Limit the length of the generated summary
+                max_new_tokens=512, # Limit the length of the generated summary
                 eos_token_id=tokenizer.eos_token_id,
                 pad_token_id=tokenizer.pad_token_id,
                 do_sample=True,
@@ -70,12 +75,21 @@ if __name__ == "__main__":
         predictions.append(generated_summary)
         references.append(reference_summary)
 
+        # Show prompt, reference, and prediction for the first few samples
+        if shown < NUM_SAMPLES_TO_SHOW:
+            logger.info("--- Sample Result ---")
+            logger.info(f"Prompt:{sample['prompt']}")
+            logger.success(f"Reference Summary::: {reference_summary}")
+            logger.warning(f"Generated Summary::: {generated_summary}\n")
+            
+            shown += 1
+
     # --- 4. Compute ROUGE Scores ---
-    logger.info("Computing ROUGE scores...")
-    rouge_metric = evaluate.load('rouge')
+    logger.info("Computing ROUGE scores...") 
+    rouge = evaluate.load("rouge")
     
-    results = rouge_metric.compute(predictions=predictions, references=references)
-    
+    results = rouge.compute(predictions=predictions, references=references)
+
     logger.success("--- FINAL EVALUATION RESULTS ---")
     logger.success(f"ROUGE-1: {results['rouge1'] * 100:.2f}")
     logger.success(f"ROUGE-2: {results['rouge2'] * 100:.2f}")

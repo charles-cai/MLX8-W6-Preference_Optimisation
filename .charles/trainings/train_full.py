@@ -1,7 +1,6 @@
 # /qwen_finetuning_project/train_full.py
 
 import torch
-from transformers import TrainingArguments
 from trl import SFTTrainer, DPOTrainer, SFTConfig, SFTTrainer
 
 # Import our custom modules
@@ -14,7 +13,6 @@ MODEL_ID = "Qwen/Qwen3-0.6B-Base"
 DATASET_NAME = "CarperAI/openai_summarize_comparisons"
 TRAIN_PERCENT = 0.20  # Use 25% of training data for a faster run
 EVAL_PERCENT = 0.15   # Use 50% of validation data
-
 
 TOP_K = 4  # Number of top layers to fine tune
 

@@ -26,22 +26,24 @@ def get_model_and_tokenizer(model_id: str, for_sequence_classification: bool = F
     # Determine the torch dtype for memory efficiency
     torch_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 
+    logger = setup_logger("model_loading")  # Add logger here
+
     if for_sequence_classification:
-        print("Loading model for Sequence Classification (Reward Modeling)...")
         model = AutoModelForSequenceClassification.from_pretrained(
             model_id,
             num_labels=1, # We want a single scalar output for the reward score
             torch_dtype=torch_dtype,
             trust_remote_code=True
         )
+        logger.success("Loading model for Sequence Classification (Reward Modeling)...")
     else:
-        print("Loading model for Causal LM (SFT/DPO)...")
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
             torch_dtype=torch_dtype,
             trust_remote_code=True
         )
-    
+        logger.success("Loading model for Causal LM (SFT/DPO)...")
+
     return model, tokenizer
 
 def main():
@@ -55,6 +57,7 @@ def main():
     model, tokenizer = get_model_and_tokenizer(model_id, for_sequence_classification)
     logger.success("Model and tokenizer loaded successfully.\n")
     logger.info("Model architecture:\n\n%s\n", model)
+    model.print_trainable_parameters()
     logger.warning("Model parameter size: %s", format_number(sum(p.numel() for p in model.parameters())))
     logger.info("Tokenizer vocabulary size: %s", format_number(len(tokenizer)))
 
