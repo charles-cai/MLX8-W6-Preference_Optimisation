@@ -32,7 +32,9 @@ def format_number(num):
 def load_and_prepare_datasets(
     dataset_name: str, 
     train_on_percent: float = 1.0, 
-    eval_on_percent: float = 1.0
+    eval_on_percent: float = 1.0,
+    train_percent_reward: float = 0.0,
+    eval_precent_reward: float = 0.0,
 ):
     """
     Loads and prepares the comparison dataset for both SFT and DPO.
@@ -51,8 +53,12 @@ def load_and_prepare_datasets(
     # --- 2. Combine validation splits for a more robust evaluation set ---
     validation_dataset = concatenate_datasets([valid1_dataset, valid2_dataset])
 
+    # --- 2.1. skip REWARD MODEL training data sector, i.e. default below is 20% for SFT training, then 20% for RM training ---
+    train_on_percent_new = train_on_percent + train_percent_reward if train_percent_reward > 0.0 else train_on_percent    
+    eval_on_percent_new = eval_on_percent + eval_precent_reward if eval_precent_reward > 0.0 else eval_on_percent
+
     # --- 3. Apply percentage-based subsetting ---
-    if train_on_percent < 1.0:
+    if train_on_percent_new < 1.0:
         # train_dataset = train_dataset.train_test_split(train_size=train_on_percent, seed=42)['train']
         num_train_samples = int(len(train_dataset) * train_on_percent)
         # --- KEY CHANGE HERE ---
@@ -60,7 +66,7 @@ def load_and_prepare_datasets(
         # NEW (SEQUENTIAL): Select the first N% of samples
         train_dataset = train_dataset.select(range(num_train_samples))
 
-    if eval_on_percent < 1.0:
+    if eval_on_percent_new < 1.0:
         # validation_dataset = validation_dataset.train_test_split(train_size=eval_on_percent, seed=42)['train']
         num_eval_samples = int(len(validation_dataset) * eval_on_percent)
         # --- KEY CHANGE HERE ---
@@ -68,7 +74,8 @@ def load_and_prepare_datasets(
         # NEW (SEQUENTIAL): Select the first N% of samples
         validation_dataset = validation_dataset.select(range(num_eval_samples))
     
-    # --- 4. Define the formatting function ---
+    # --- 4. Define th#e formatting function ---
+    # Standard format for PPO / DPO: ["prompt", "chosen", "rejected"]
     def format_data(example):
         # Add a random instruction to the original prompt for variety
         prompt = random.choice(Prompts) + "\n\n" + example['prompt']
@@ -103,16 +110,21 @@ if __name__ == "__main__":
     logger = setup_logger("dataset_preparation")
     
     # --- SCENARIO: Use 25% of train data and 50% of validation data ---
-    TRAIN_PERCENT = 0.25 # 25% for faster training
-    EVAL_PERCENT = 0.50  # 50% of the combined validation sets
+    TRAIN_PERCENT = 0.20 # 20% for faster training
+    EVAL_PERCENT = 0.15  # 15% of the combined validation sets
+    TRAIN_PERCENT_REWARD = 0.0
+    EVAL_PERCENT_REWARD = 0.0
 
     logger.info(f"Loading {dataset_name} with {TRAIN_PERCENT*100}% of train and {EVAL_PERCENT*100}% of validation data.")
+    logger.info(f"Train percent for reward model: {TRAIN_PERCENT_REWARD*100}%, Eval percent for reward model: {EVAL_PERCENT_REWARD*100}%")
 
     # Load the base datasets formatted for DPO
     dpo_train_dataset, dpo_validation_dataset, dpo_test_dataset = load_and_prepare_datasets(
         dataset_name=dataset_name,
         train_on_percent=TRAIN_PERCENT,
-        eval_on_percent=EVAL_PERCENT
+        eval_on_percent=EVAL_PERCENT,
+        train_percent_reward=TRAIN_PERCENT_REWARD,
+        eval_precent_reward=EVAL_PERCENT_REWARD,
     )
     
     logger.success("DPO/RM datasets prepared:\n" +

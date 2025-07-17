@@ -16,9 +16,8 @@ EVAL_PERCENT = 0.15   # Use 50% of validation data
 
 TOP_K = 4  # Number of top layers to fine tune
 
-SFT_OUTPUT_DIR = "./.data/sft_full_results"
+SFT_OUTPUT_DIR = f"./.data/sft_full_top_{TOP_K}"
 DPO_OUTPUT_DIR = "./.data/dpo_full_results"
-FINAL_MODEL_PATH = f"./.data/Qwen3_0.6B_tuned_topk{TOP_K})"
 
 def freeze_bottom_layers(model, num_layers_to_tune):
     """
@@ -118,52 +117,8 @@ if __name__ == "__main__":
     sft_trainer.save_model(SFT_OUTPUT_DIR)
     tokenizer.save_pretrained(SFT_OUTPUT_DIR)
 
-    # Clean up to free VRAM
-    del sft_model
-    del sft_trainer
-    torch.cuda.empty_cache()
-    logger.info("Cleaned up SFT resources.")
-
-    # --- 3. Stage 2: Direct Preference Optimization (DPO) ---
-    logger.info("--- STAGE 2: DIRECT PREFERENCE OPTIMIZATION (DPO) ---")
-
-    # Load the SFT-tuned model from disk
-    dpo_model, tokenizer = get_model_and_tokenizer(SFT_OUTPUT_DIR)
-
-    dpo_training_args = TrainingArguments(
-        output_dir=DPO_OUTPUT_DIR,
-        num_train_epochs=1,
-        per_device_train_batch_size=1, # DPO is more memory-intensive
-        per_device_eval_batch_size=1,
-        gradient_accumulation_steps=8,
-        learning_rate=5e-6, # Use a lower learning rate for preference tuning
-        logging_steps=50,
-        save_steps=200,
-        do_eval=True,
-        eval_steps=200,
-        save_total_limit=1,
-        bf16=torch.cuda.is_bf16_supported(),
-        fp16=not torch.cuda.is_bf16_supported(),
-        report_to="none",
-    )
-
-    dpo_trainer = DPOTrainer(
-        model=dpo_model,
-        ref_model=None, # TRL will handle creating the reference model copy
-        args=dpo_training_args,
-        train_dataset=dpo_train,
-        eval_dataset=dpo_eval,
-        tokenizer=tokenizer,
-        beta=0.1,
-        max_prompt_length=512,
-        max_length=1024,
-        # IMPORTANT: No peft_config is passed, so it performs full fine-tuning
-    )
-
-    dpo_trainer.train()
-    logger.success(f"DPO finished. Final model saved to {DPO_OUTPUT_DIR}")
-    
-    # Save the final DPO model
-    dpo_trainer.save_model(FINAL_MODEL_PATH)
-    tokenizer.save_pretrained(FINAL_MODEL_PATH)
-    logger.success(f"Fully tuned final model saved to {FINAL_MODEL_PATH}")
+    # # Clean up to free VRAM
+    # del sft_model
+    # del sft_trainer
+    # torch.cuda.empty_cache()
+    # logger.info("Cleaned up SFT resources.")

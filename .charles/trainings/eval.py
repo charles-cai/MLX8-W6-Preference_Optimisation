@@ -12,10 +12,12 @@ from logger_utils import setup_logger
 # --- Configuration ---
 # Path to the final model you want to evaluate
 # This could be the full-tuned one or the merged QLoRA one
-FINAL_MODEL_PATH = "./.data/sft_full_results" 
+FINAL_MODEL_PATH = "./data/dpo_qlora_merged#" #./.data/sft_full_results" 
 DATASET_NAME = "CarperAI/openai_summarize_comparisons"
 NUM_TEST_SAMPLES = 20 # 1000 Evaluate on a subset of the test set for speed. Use len(test_dataset) for full eval.
 NUM_SAMPLES_TO_SHOW = 20
+
+TOP_K = 4
 
 if __name__ == "__main__":
     logger = setup_logger("evaluation_script")
