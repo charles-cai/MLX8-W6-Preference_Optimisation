@@ -29,22 +29,42 @@
       "python": "${workspaceFolder}/.charles/.venv/bin/python"
     },
     {
-      "name": "Debug train_full.py",
+      "name": "Debug train_sft.py full (TOP_K=0)",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/.charles/trainings/train_full.py",
+      "program": "${workspaceFolder}/.charles/trainings/train_sft.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}/.charles/trainings",
+      "python": "${workspaceFolder}/.charles/.venv/bin/python",
+      "args": ["--top_k", "0"]
+    },
+    {
+      "name": "Debug train_sft.py (default TOP_K=4)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/.charles/trainings/train_sft.py",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}/.charles/trainings",
       "python": "${workspaceFolder}/.charles/.venv/bin/python"
     },
     {
-      "name": "Debug eval",
+      "name": "Debug eval - sft (default TOP_K=4)",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/.charles/trainings/eval.py",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}/.charles/trainings",
       "python": "${workspaceFolder}/.charles/.venv/bin/python"
+    }, 
+    {
+      "name": "Debug eval - sft FULL (TOP_K=0)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/.charles/trainings/eval.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}/.charles/trainings",
+      "python": "${workspaceFolder}/.charles/.venv/bin/python",
+      "args": ["--sft", "--top_k", "0"]
     },
     {
       "name": "Debug train_dpo_qlora",

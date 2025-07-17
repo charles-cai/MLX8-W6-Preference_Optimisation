@@ -1,23 +1,24 @@
 # /qwen_finetuning_project/train_full.py
 
 import torch
-from trl import SFTTrainer, DPOTrainer, SFTConfig, SFTTrainer
+import argparse
+import os
+from dotenv import load_dotenv
+from trl import SFTConfig, SFTTrainer
 
 # Import our custom modules
 from data_prep_unified import load_and_prepare_datasets, create_sft_format
 from model import get_model_and_tokenizer
 from logger_utils import setup_logger
 
+# Load environment variables
+load_dotenv()
+
 # --- Configuration ---
-MODEL_ID = "Qwen/Qwen3-0.6B-Base"
-DATASET_NAME = "CarperAI/openai_summarize_comparisons"
-TRAIN_PERCENT = 0.20  # Use 25% of training data for a faster run
-EVAL_PERCENT = 0.15   # Use 50% of validation data
-
-TOP_K = 4  # Number of top layers to fine tune
-
-SFT_OUTPUT_DIR = f"./.data/sft_full_top_{TOP_K}"
-DPO_OUTPUT_DIR = "./.data/dpo_full_results"
+MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen3-0.6B-Base")
+DATASET_NAME_COMPARISON = os.environ.get("DATASET_NAME_COMPARISON", "CarperAI/openai_summarize_comparisons")
+TRAIN_PERCENT = float(os.environ.get("TRAIN_PERCENT", "0.20"))
+EVAL_PERCENT = float(os.environ.get("EVAL_PERCENT", "0.15"))
 
 def freeze_bottom_layers(model, num_layers_to_tune):
     """
@@ -60,12 +61,23 @@ def freeze_bottom_layers(model, num_layers_to_tune):
 
 
 if __name__ == "__main__":
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Supervised Fine-Tuning (SFT) for Qwen model")
+    parser.add_argument("--top_k", type=int, default=int(os.environ.get("TOP_K", "4")), 
+                        help="Number of top layers to fine-tune (default from .env or 0 for full model training)")
+    args = parser.parse_args()
+    
     logger = setup_logger("full_training_pipeline")
+
+    TOP_K = args.top_k  # Command line argument overwrites .env configuration
+
+    SFT_OUTPUT_DIR = f"{os.environ.get('SFT_OUTPUT_DIR_PREFIX', './.data/sft_full_top_')}{TOP_K}"
+    DPO_OUTPUT_DIR = os.environ.get("DPO_OUTPUT_DIR", "./.data/dpo_full_results")
 
     # --- 1. Data Preparation ---
     logger.info("--- Preparing Datasets ---")
     dpo_train, dpo_eval, _ = load_and_prepare_datasets(
-        dataset_name=DATASET_NAME,
+        dataset_name=DATASET_NAME_COMPARISON,
         train_on_percent=TRAIN_PERCENT,
         eval_on_percent=EVAL_PERCENT
     )
@@ -84,21 +96,21 @@ if __name__ == "__main__":
 
     training_args = SFTConfig(
         output_dir=SFT_OUTPUT_DIR,
-        num_train_epochs=1,
-        per_device_train_batch_size=2,
-        per_device_eval_batch_size=2,
-        gradient_accumulation_steps=4,
-        learning_rate=2e-5,
+        num_train_epochs=int(os.environ.get("NUM_TRAIN_EPOCHS", "1")),
+        per_device_train_batch_size=int(os.environ.get("PER_DEVICE_TRAIN_BATCH_SIZE", "2")),
+        per_device_eval_batch_size=int(os.environ.get("PER_DEVICE_EVAL_BATCH_SIZE", "2")),
+        gradient_accumulation_steps=int(os.environ.get("GRADIENT_ACCUMULATION_STEPS", "4")),
+        learning_rate=float(os.environ.get("LEARNING_RATE", "2e-5")),
         logging_strategy="steps",
-        logging_steps=100,
+        logging_steps=int(os.environ.get("LOGGING_STEPS", "100")),
         save_strategy="steps",
-        save_steps=500,
-        eval_steps=500,
-        save_total_limit=1,
+        save_steps=int(os.environ.get("SAVE_STEPS", "500")),
+        eval_steps=int(os.environ.get("EVAL_STEPS", "500")),
+        save_total_limit=int(os.environ.get("SAVE_TOTAL_LIMIT", "1")),
         bf16=torch.cuda.is_bf16_supported(),
         fp16=not torch.cuda.is_bf16_supported(),
         report_to="none",
-        max_seq_length=1024,
+        max_seq_length=int(os.environ.get("MAX_SEQ_LENGTH", "1024")),
         completion_only_loss=True, 
     )
 

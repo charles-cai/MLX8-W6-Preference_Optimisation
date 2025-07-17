@@ -1,9 +1,11 @@
 # /qwen_finetuning_project/train_lora.py
 
 import torch
+import os
+from dotenv import load_dotenv
 from transformers import BitsAndBytesConfig
 from peft import LoraConfig, PeftModel
-from trl import SFTTrainer, DPOTrainer
+from trl import DPOTrainer
 from trl.trainer.dpo_config import DPOConfig
 
 # Import our custom modules
@@ -14,14 +16,17 @@ from logger_utils import setup_logger
 # We need the base model class for loading with quantization
 from transformers import AutoModelForCausalLM
 
-# --- Configuration ---
-MODEL_ID = "Qwen/Qwen3-0.6B-Base"
-DATASET_NAME = "CarperAI/openai_summarize_comparisons"
-TRAIN_PERCENT = 0.20  # Use 20% of training data for a faster run
-EVAL_PERCENT = 0.15   # Use 15% of validation data
+# Load environment variables
+load_dotenv()
 
-DPO_ADAPTER_DIR =           "./.data/dpo_qlora_adapter"
-FINAL_MERGED_MODEL_PATH =   "./.data/dpo_qlora_merged"
+# --- Configuration ---
+MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen3-0.6B-Base")
+DATASET_NAME = os.environ.get("DATASET_NAME", "CarperAI/openai_summarize_comparisons")
+TRAIN_PERCENT = float(os.environ.get("TRAIN_PERCENT", "0.20"))
+EVAL_PERCENT = float(os.environ.get("EVAL_PERCENT", "0.15"))
+
+DPO_ADAPTER_DIR = os.environ.get("DPO_ADAPTER_DIR", "./.data/dpo_qlora_adapter")
+DPO_MERGED_DIR = os.environ.get("DPO_MERGED_DIR", "./.data/dpo_qlora_merged")
 
 if __name__ == "__main__":
     logger = setup_logger("dpo_qlora_training_pipeline")
@@ -113,7 +118,7 @@ if __name__ == "__main__":
     
     # Reload the base model in full precision (e.g., bfloat16) to merge
     merged_model = PeftModel.from_pretrained(base_model, DPO_ADAPTER_DIR) 
-    merged_model.save_pretrained(FINAL_MERGED_MODEL_PATH)
-    tokenizer.save_pretrained(FINAL_MERGED_MODEL_PATH)
+    merged_model.save_pretrained(DPO_MERGED_DIR)
+    tokenizer.save_pretrained(DPO_MERGED_DIR)
     
-    logger.success(f"Successfully merged adapter. Final model saved to {FINAL_MERGED_MODEL_PATH}")
+    logger.success(f"Successfully merged adapter. Final model saved to {DPO_MERGED_DIR}")

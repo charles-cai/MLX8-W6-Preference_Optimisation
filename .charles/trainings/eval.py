@@ -1,6 +1,9 @@
 # /qwen_finetuning_project/evaluate.py
 
 import torch
+import os
+import argparse
+from dotenv import load_dotenv
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import evaluate
@@ -9,27 +12,52 @@ import evaluate
 from data_prep_unified import load_and_prepare_datasets
 from logger_utils import setup_logger
 
-# --- Configuration ---
-# Path to the final model you want to evaluate
-# This could be the full-tuned one or the merged QLoRA one
-FINAL_MODEL_PATH = "./data/dpo_qlora_merged#" #./.data/sft_full_results" 
-DATASET_NAME = "CarperAI/openai_summarize_comparisons"
-NUM_TEST_SAMPLES = 20 # 1000 Evaluate on a subset of the test set for speed. Use len(test_dataset) for full eval.
-NUM_SAMPLES_TO_SHOW = 20
+# Load environment variables
+load_dotenv()
 
-TOP_K = 4
+# --- Configuration ---
+def get_args():
+    parser = argparse.ArgumentParser(description="Evaluate SFT or DPO model")
+    parser.add_argument("--sft", action="store_true", help="Use SFT model for evaluation")
+    parser.add_argument("--top_k", type=int, default=int(os.environ.get("TOP_K", "4")), 
+                        help="Top K parameter for SFT model path")
+    parser.add_argument("--dpo", action="store_true", help="Use DPO model for evaluation")
+    
+    args = parser.parse_args()
+    
+    # Default to DPO if no specific option is provided
+    if not args.sft and not args.dpo:
+        args.dpo = True
+    
+    return args
+
+args = get_args()
+
+TOP_K = args.top_k  # Command line argument overwrites .env configuration
+
+# Determine model path based on arguments
+if args.sft:
+    SFT_OUTPUT_DIR_PREFIX = os.environ.get("SFT_OUTPUT_DIR_PREFIX", "./.data/sft_full_top_")
+    EVAL_MODEL_PATH = SFT_OUTPUT_DIR_PREFIX + str(TOP_K)
+elif args.dpo:
+    EVAL_MODEL_PATH = os.environ.get("EVAL_MODEL_PATH", "./.data/dpo_qlora_merged")
+
+DATASET_NAME = os.environ.get("DATASET_NAME_COMPARISON", "CarperAI/openai_summarize_comparisons")
+NUM_TEST_SAMPLES = int(os.environ.get("NUM_TEST_SAMPLES", "20"))
+NUM_SAMPLES_TO_SHOW = int(os.environ.get("NUM_SAMPLES_TO_SHOW", "20"))
 
 if __name__ == "__main__":
     logger = setup_logger("evaluation_script")
 
     # --- 1. Load Model and Tokenizer ---
-    logger.info(f"Loading final model from: {FINAL_MODEL_PATH}")
+    model_type = "SFT" if args.sft else "DPO"
+    logger.info(f"Loading {model_type} model from: {EVAL_MODEL_PATH}")
     model = AutoModelForCausalLM.from_pretrained(
-        FINAL_MODEL_PATH,
+        EVAL_MODEL_PATH,
         torch_dtype=torch.bfloat16,
         device_map="auto"
     )
-    tokenizer = AutoTokenizer.from_pretrained(FINAL_MODEL_PATH)
+    tokenizer = AutoTokenizer.from_pretrained(EVAL_MODEL_PATH)
     model.eval() # Set model to evaluation mode
 
     # --- 2. Load and Prepare Test Data ---
