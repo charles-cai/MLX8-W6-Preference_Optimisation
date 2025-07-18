@@ -96,6 +96,7 @@ if __name__ == "__main__":
 
     training_args = SFTConfig(
         output_dir=SFT_OUTPUT_DIR,
+        run_name=f"sft_top_{TOP_K}_{MODEL_ID.split('/')[-1]}",
         num_train_epochs=int(os.environ.get("NUM_TRAIN_EPOCHS", "1")),
         per_device_train_batch_size=int(os.environ.get("PER_DEVICE_TRAIN_BATCH_SIZE", "2")),
         per_device_eval_batch_size=int(os.environ.get("PER_DEVICE_EVAL_BATCH_SIZE", "2")),
@@ -110,8 +111,9 @@ if __name__ == "__main__":
         bf16=torch.cuda.is_bf16_supported(),
         fp16=not torch.cuda.is_bf16_supported(),
         report_to="none",
-        max_seq_length=int(os.environ.get("MAX_SEQ_LENGTH", "1024")),
-        completion_only_loss=True, 
+        max_seq_length=int(os.environ.get("MAX_SEQ_LENGTH", "512")),
+        completion_only_loss=True,
+        dataloader_drop_last=True,  # Ensure consistent batch sizes
     )
 
     sft_trainer = SFTTrainer(

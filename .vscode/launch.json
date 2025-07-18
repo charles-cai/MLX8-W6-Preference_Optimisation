@@ -8,7 +8,8 @@
       "program": "${workspaceFolder}/.charles/nano-vllm-qwen3/qwen3_nano_tests.py",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}/.charles/nano-vllm-qwen3",
-      "python": "${workspaceFolder}/.charles/nano-vllm-qwen3/.venv/bin/python"
+      "python": "${workspaceFolder}/.charles/nano-vllm-qwen3/.venv/bin/python",
+      "justMyCode": false
     },
     {
       "name": "Debug data_prep_unified.py",
@@ -17,7 +18,8 @@
       "program": "${workspaceFolder}/.charles/trainings/data_prep_unified.py",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}/.charles/trainings",
-      "python": "${workspaceFolder}/.charles/.venv/bin/python"
+      "python": "${workspaceFolder}/.charles/.venv/bin/python",
+      "justMyCode": false
     },
     {
       "name": "Debug model.py",
@@ -26,7 +28,8 @@
       "program": "${workspaceFolder}/.charles/trainings/model.py",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}/.charles/trainings",
-      "python": "${workspaceFolder}/.charles/.venv/bin/python"
+      "python": "${workspaceFolder}/.charles/.venv/bin/python",
+      "justMyCode": false
     },
     {
       "name": "Debug train_sft.py full (TOP_K=0)",
@@ -36,7 +39,8 @@
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}/.charles/trainings",
       "python": "${workspaceFolder}/.charles/.venv/bin/python",
-      "args": ["--top_k", "0"]
+      "args": ["--top_k", "0"],
+      "justMyCode": false
     },
     {
       "name": "Debug train_sft.py (default TOP_K=4)",
@@ -45,7 +49,8 @@
       "program": "${workspaceFolder}/.charles/trainings/train_sft.py",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}/.charles/trainings",
-      "python": "${workspaceFolder}/.charles/.venv/bin/python"
+      "python": "${workspaceFolder}/.charles/.venv/bin/python",
+      "justMyCode": false
     },
     {
       "name": "Debug eval - sft (default TOP_K=4)",
@@ -54,7 +59,8 @@
       "program": "${workspaceFolder}/.charles/trainings/eval.py",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}/.charles/trainings",
-      "python": "${workspaceFolder}/.charles/.venv/bin/python"
+      "python": "${workspaceFolder}/.charles/.venv/bin/python",
+      "justMyCode": false
     }, 
     {
       "name": "Debug eval - sft FULL (TOP_K=0)",
@@ -64,7 +70,8 @@
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}/.charles/trainings",
       "python": "${workspaceFolder}/.charles/.venv/bin/python",
-      "args": ["--sft", "--top_k", "0"]
+      "args": ["--sft", "--top_k", "0"],
+      "justMyCode": false
     },
     {
       "name": "Debug train_dpo_qlora",
@@ -73,7 +80,75 @@
       "program": "${workspaceFolder}/.charles/trainings/train_dpo_qlora.py",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}/.charles/trainings",
-      "python": "${workspaceFolder}/.charles/.venv/bin/python"
+      "python": "${workspaceFolder}/.charles/.venv/bin/python",
+      "justMyCode": false
+    },
+    {
+      "name": "Debug train_reward.py",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/.charles/trainings/train_reward.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}/.charles/trainings",
+      "python": "${workspaceFolder}/.charles/.venv/bin/python",
+      "justMyCode": false
+    },
+    {
+      "name": "Debug eval_reward.py",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/.charles/trainings/eval_reward.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}/.charles/trainings",
+      "python": "${workspaceFolder}/.charles/.venv/bin/python",
+      "justMyCode": false
+    },
+    {
+      "name": "Debug train_ppo.py (Full Precision)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/.charles/trainings/train_ppo.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}/.charles/trainings",
+      "python": "${workspaceFolder}/.charles/.venv/bin/python",
+      "env": {
+        "USE_QLORA": "false"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "Debug train_ppo_qlora.py (QLoRA)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/.charles/trainings/train_ppo_qlora.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}/.charles/trainings",
+      "python": "${workspaceFolder}/.charles/.venv/bin/python",
+      "env": {
+        "USE_QLORA": "true",
+        "LORA_R": "64",
+        "LORA_ALPHA": "16",
+        "LORA_DROPOUT": "0.1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "Debug train_ppo_qlora.py (QLoRA Small)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/.charles/trainings/train_ppo_qlora.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}/.charles/trainings",
+      "python": "${workspaceFolder}/.charles/.venv/bin/python",
+      "env": {
+        "USE_QLORA": "true",
+        "LORA_R": "32",
+        "LORA_ALPHA": "8",
+        "LORA_DROPOUT": "0.1",
+        "PPO_STEPS": "100",
+        "PPO_BATCH_SIZE": "16"
+      },
+      "justMyCode": false
     }
   ]
 }
