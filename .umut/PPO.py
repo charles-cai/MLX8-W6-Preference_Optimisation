@@ -1,11 +1,12 @@
-import torch
+import torch, os
 from torch import nn
 from torch.nn import functional as F
-from transformers import AutoTokenizer, AutoModelForCausalLM
-
-import torch
 from peft import PeftModel, LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModelForSequenceClassification
+from torch.utils.data import DataLoader
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
 
 base_model_name = "Qwen/Qwen3-0.6B-Base"
 lora_ckpt_path = "qwen-lora-sft-epoch1.pth"  # your LoRA checkpoint path
@@ -13,6 +14,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # --- Load base model & tokenizer ---
 tokenizer = AutoTokenizer.from_pretrained(base_model_name, trust_remote_code=True)
+tokenizer.padding_side = "left"
 tokenizer.pad_token = tokenizer.eos_token
 
 # ---- Load policy model: base + LoRA ----
@@ -69,20 +71,29 @@ train_dataloader = [
     "Summarize the key takeaways from this post:"
 ]
 
-#dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=4, pin_memory=True)
+from torch.utils.data import DataLoader
+from dataloaderV2 import RedditSummarySFTDataset  # ✅ Your dataset must return accepted/rejected pairs
+train_dataset = RedditSummarySFTDataset(split="train", model_name="Qwen/Qwen3-0.6B", max_length=512, start_idx = 0, end_idx = 20000)
+train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=12, pin_memory=True)
 
-#train_dataloader = 
+
+
+from tqdm import tqdm
 
 num_epochs = 1
-for epoch in range(num_epochs):
-    for batch in train_dataloader:
-        # Extract prompt (assuming batch is a dict)
-        prompt = batch["prompt"] if isinstance(batch, dict) else batch
 
-        # Tokenize and move to device
-        inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True).to(device)
-        input_ids = inputs["input_ids"]
-        attention_mask = inputs["attention_mask"]
+for epoch in range(num_epochs):
+    loop = tqdm(train_loader, desc=f"PPO Epoch {epoch+1}", leave=True)
+    
+    for batch_idx, batch in enumerate(loop):
+        # Get prompt (assuming batch is a dict with 'prompt' field)
+        prompt_texts = batch["prompt"] if isinstance(batch, dict) else batch
+
+        # Tokenize prompts
+        inputs = tokenizer(prompt_texts, return_tensors="pt", padding=True, truncation=True)
+        input_ids = inputs["input_ids"].to(device)
+        attention_mask = inputs["attention_mask"].to(device)
+
 
         with torch.no_grad():
             response_ids = policy_model.generate(
@@ -90,7 +101,7 @@ for epoch in range(num_epochs):
                 max_new_tokens=100,
                 attention_mask=attention_mask,  # ✅ include this
                 do_sample=True,
-                pad_token_id=tokenizer.eos_token_id
+                pad_token_id=tokenizer.pad_token_id  # ✅ here
             )
         
         # Combine prompt and response
