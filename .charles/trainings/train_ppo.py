@@ -101,10 +101,58 @@ def prepare_policy_dataset(dataset, tokenizer, num_samples=None):
     def format_for_ppo(example):
         # For PPO, we need the query text
         prompt = example['prompt'] + "\n\nSummary:"
-        return {"query": prompt}
+        
+        # Tokenize the query for TRL compatibility
+        tokenized = tokenizer(
+            prompt,
+            truncation=True,
+            max_length=512 - MAX_NEW_TOKENS,
+            padding=False,
+            return_tensors=None
+        )
+        
+        return {
+            "query": prompt,
+            "input_ids": tokenized["input_ids"],
+            "attention_mask": tokenized["attention_mask"]
+        }
     
     formatted_dataset = dataset.map(format_for_ppo, remove_columns=dataset.column_names)
     return formatted_dataset
+
+def ppo_data_collator(batch):
+    """
+    Custom data collator for PPO that handles mixed tensor/string data.
+    """
+    # Separate queries (strings) from tokenized data (tensors)
+    queries = [item["query"] for item in batch]
+    
+    # Extract and pad only the tensor fields
+    input_ids = [item["input_ids"] for item in batch]
+    attention_masks = [item["attention_mask"] for item in batch]
+    
+    # Pad sequences manually
+    max_length = max(len(ids) for ids in input_ids)
+    
+    padded_input_ids = []
+    padded_attention_masks = []
+    
+    for ids, mask in zip(input_ids, attention_masks):
+        padding_length = max_length - len(ids)
+        
+        # Pad input_ids with pad_token_id
+        padded_ids = ids + [tokenizer.pad_token_id] * padding_length
+        padded_input_ids.append(padded_ids)
+        
+        # Pad attention_mask with 0s
+        padded_mask = mask + [0] * padding_length
+        padded_attention_masks.append(padded_mask)
+    
+    return {
+        "query": queries,
+        "input_ids": torch.tensor(padded_input_ids),
+        "attention_mask": torch.tensor(padded_attention_masks)
+    }
 
 def evaluate_policy(policy_model, tokenizer, reward_model, eval_dataset, num_samples=10):
     """
@@ -208,24 +256,6 @@ if __name__ == "__main__":
     base_model = AutoModelForCausalLM.from_pretrained(BASE_MODEL_PATH)
     policy_model.generation_config = base_model.generation_config
 
-    # # Fix: Add generation_config to policy_model for TRL PPOTrainer compatibility
-    # if not hasattr(policy_model, 'generation_config'):
-    #     # Load the base model's generation config or create a default one
-    #     try:
-    #         # base_model_for_config = AutoModelForCausalLM.from_pretrained(BASE_MODEL_PATH)
-    #         policy_model.generation_config = base_model.generation_config
-    #     #     #del base_model_for_config  # Free memory
-    #     # except:
-    #     #     # Create a default generation config if loading fails
-    #     #     policy_model.generation_config = GenerationConfig(
-    #     #         max_new_tokens=MAX_NEW_TOKENS,
-    #     #         temperature=TEMPERATURE,
-    #     #         top_p=TOP_P,
-    #     #         do_sample=True,
-    #     #         pad_token_id=tokenizer.pad_token_id if hasattr(tokenizer, 'pad_token_id') else 0,
-    #     #         eos_token_id=tokenizer.eos_token_id if hasattr(tokenizer, 'eos_token_id') else 0,
-    #     #     )
-          
     # Load reference model (for KL divergence)
     ref_model = AutoModelForCausalLM.from_pretrained(
         BASE_MODEL_PATH,
@@ -249,8 +279,8 @@ if __name__ == "__main__":
     )
     
     # Format for PPO with tokenizer
-    ppo_train_dataset, train_queries = prepare_policy_dataset(train_dataset, tokenizer, num_samples=PPO_STEPS)
-    ppo_eval_dataset, eval_queries = prepare_policy_dataset(eval_dataset, tokenizer, num_samples=100)
+    ppo_train_dataset = prepare_policy_dataset(train_dataset, tokenizer, num_samples=PPO_STEPS)
+    ppo_eval_dataset = prepare_policy_dataset(eval_dataset, tokenizer, num_samples=100)
     
     logger.success(f"PPO datasets prepared:")
     logger.success(f"Train samples: {len(ppo_train_dataset)}")
@@ -270,7 +300,8 @@ if __name__ == "__main__":
     # --- 5. Create PPO Trainer ---
     logger.info("Creating PPO trainer...")
     
-    ppo_trainer = PPOTrainer(
+    # Simplified PPOTrainer without reward model (we'll handle rewards manually)
+    ppo_trainer = PPOTrainer(       
         args=ppo_config,  # Use args instead of config
         processing_class=tokenizer,  # Use processing_class instead of tokenizer
         model=policy_model, # actor / policy: the trainable copy (SFT initialized)
@@ -278,8 +309,9 @@ if __name__ == "__main__":
         reward_model=reward_model.model,  # a separately-trained, frozen scalar scorer
         value_model=base_model,  # Use policy model as value model
         train_dataset=ppo_train_dataset,  # Simple list of query strings
+        data_collator=ppo_data_collator,
     )
-    
+
     # --- 6. Training Loop ---
     logger.info("--- Starting PPO Training ---")
     
@@ -296,17 +328,9 @@ if __name__ == "__main__":
         if epoch >= PPO_STEPS:
             break
         
-        # Extract queries from batch
+        # Extract queries and input_ids from batch
         queries = batch["query"]
-        
-        # Tokenize queries
-        query_tensors = tokenizer(
-            queries,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=512 - MAX_NEW_TOKENS
-        )["input_ids"].to(policy_device)
+        query_tensors = batch["input_ids"].to(policy_device)
         
         # Generate responses
         response_tensors = []
@@ -328,62 +352,116 @@ if __name__ == "__main__":
         responses = [tokenizer.decode(r, skip_special_tokens=True) for r in response_tensors]
         full_texts = [q + r for q, r in zip(queries, responses)]
         
-        # Get rewards
+        # Get rewards using our custom reward model
         rewards = reward_model.get_reward(full_texts)
-        rewards = [r.to(policy_device) for r in rewards]
+        rewards = [torch.tensor(r.item()).to(policy_device) for r in rewards]
         
         # Convert query_tensors to list for TRL compatibility
         query_tensors_list = [query_tensors[i] for i in range(query_tensors.size(0))]
         
-        # PPO training step using current TRL API
+        # Manual PPO-style training implementation
         try:
-            stats = ppo_trainer.step(query_tensors_list, response_tensors, rewards)
-        except AttributeError:
-            # If step method doesn't exist, use alternative approach
-            logger.warning("PPOTrainer.step() not available, using manual training")
+            logger.debug("Running manual PPO training step")
             
-            # Manual PPO update using trainer's internal methods
+            # Compute advantages and train
             all_logprobs = []
             all_ref_logprobs = []
-            all_values = []
             
-            with torch.no_grad():
-                for i, (query_tensor, response_tensor) in enumerate(zip(query_tensors_list, response_tensors)):
-                    full_tensor = torch.cat([query_tensor, response_tensor])
-                    
-                    # Get logprobs from policy model
-                    outputs = policy_model(full_tensor.unsqueeze(0))
-                    logits = outputs.logits[0, query_tensor.size(0)-1:-1]
-                    logprobs = torch.nn.functional.log_softmax(logits, dim=-1)
-                    response_logprobs = logprobs.gather(1, response_tensor.unsqueeze(1)).squeeze()
-                    all_logprobs.append(response_logprobs.sum())
-                    
-                    # Get ref logprobs
+            policy_model.train()
+            
+            for i, (query_tensor, response_tensor) in enumerate(zip(query_tensors_list, response_tensors)):
+                full_tensor = torch.cat([query_tensor, response_tensor])
+                
+                # Get logprobs from policy model - handle tuple/tensor outputs
+                outputs = policy_model(full_tensor.unsqueeze(0))
+                if hasattr(outputs, 'logits'):
+                    logits = outputs.logits
+                elif isinstance(outputs, tuple):
+                    logits = outputs[0]  # First element is logits
+                else:
+                    logits = outputs
+                
+                # Get logprobs for the response tokens
+                response_start = query_tensor.size(0)
+                response_logits = logits[0, response_start-1:-1]  # Shift by 1 for next token prediction
+                logprobs = torch.nn.functional.log_softmax(response_logits, dim=-1)
+                
+                # Ensure response_tensor has correct shape for gathering
+                if response_tensor.dim() == 1:
+                    response_indices = response_tensor.unsqueeze(1)
+                else:
+                    response_indices = response_tensor
+                
+                # Gather logprobs for actual response tokens
+                if response_indices.size(0) <= logprobs.size(0):
+                    gathered_logprobs = logprobs[:response_indices.size(0)].gather(1, response_indices)
+                    response_logprobs = gathered_logprobs.squeeze().sum()
+                else:
+                    # Handle case where response is longer than available logits
+                    response_logprobs = torch.tensor(0.0, device=policy_device)
+                
+                all_logprobs.append(response_logprobs)
+                
+                # Get ref logprobs
+                with torch.no_grad():
                     ref_outputs = ref_model(full_tensor.unsqueeze(0))
-                    ref_logits = ref_outputs.logits[0, query_tensor.size(0)-1:-1]
-                    ref_logprobs = torch.nn.functional.log_softmax(ref_logits, dim=-1)
-                    ref_response_logprobs = ref_logprobs.gather(1, response_tensor.unsqueeze(1)).squeeze()
-                    all_ref_logprobs.append(ref_response_logprobs.sum())
+                    if hasattr(ref_outputs, 'logits'):
+                        ref_logits = ref_outputs.logits
+                    elif isinstance(ref_outputs, tuple):
+                        ref_logits = ref_outputs[0]
+                    else:
+                        ref_logits = ref_outputs
                     
-                    # Get values (using policy model as value model)
-                    all_values.append(rewards[i])
+                    ref_response_logits = ref_logits[0, response_start-1:-1]
+                    ref_logprobs = torch.nn.functional.log_softmax(ref_response_logits, dim=-1)
+                    
+                    if response_indices.size(0) <= ref_logprobs.size(0):
+                        ref_gathered_logprobs = ref_logprobs[:response_indices.size(0)].gather(1, response_indices)
+                        ref_response_logprobs = ref_gathered_logprobs.squeeze().sum()
+                    else:
+                        ref_response_logprobs = torch.tensor(0.0, device=policy_device)
+                    
+                    all_ref_logprobs.append(ref_response_logprobs)
             
-            # Simple policy gradient update
-            policy_loss = 0
+            # Compute policy loss with KL penalty
+            policy_loss = torch.tensor(0.0, device=policy_device)
+            kl_div = torch.tensor(0.0, device=policy_device)
+            
             for i, (logprob, ref_logprob, reward) in enumerate(zip(all_logprobs, all_ref_logprobs, rewards)):
-                advantage = reward - 0.1 * (logprob - ref_logprob)  # KL penalty
-                policy_loss -= logprob * advantage
+                kl_penalty = 0.1 * (logprob - ref_logprob)
+                advantage = reward - kl_penalty
+                policy_loss -= logprob * advantage.detach()
+                kl_div += (logprob - ref_logprob)
             
             policy_loss = policy_loss / len(all_logprobs)
+            kl_div = kl_div / len(all_logprobs)
             
-            # Backward pass
-            ppo_trainer.accelerator.backward(policy_loss)
-            ppo_trainer.optimizer.step()
-            ppo_trainer.optimizer.zero_grad()
+            # Backward pass with optimizer from trainer
+            if hasattr(ppo_trainer, 'optimizer'):
+                optimizer = ppo_trainer.optimizer
+            else:
+                # Create optimizer if trainer doesn't have one
+                optimizer = torch.optim.AdamW(policy_model.parameters(), lr=PPO_LR)
+            
+            policy_loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
             
             stats = {
                 "ppo/policy_loss": policy_loss.item(),
                 "ppo/mean_scores": torch.stack(rewards).mean().item(),
+                "ppo/kl_div": kl_div.item(),
+            }
+            
+        except Exception as e:
+            logger.error(f"Training step failed: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            # Simple fallback - just log the error and continue
+            stats = {
+                "ppo/policy_loss": 0.0,
+                "ppo/mean_scores": torch.stack(rewards).mean().item(),
+                "error": str(e)
             }
         
         # Log statistics
