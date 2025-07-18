@@ -495,7 +495,7 @@ if __name__ == "__main__":
                 query = sample['query']
                 
                 # Generate response
-                inputs = tokenizer(query, return_tensors='pt').to(policy_model.device)
+                inputs = tokenizer(query, return_tensors='pt').to(next(policy_model.parameters()).device)
                 
                 with torch.no_grad():
                     outputs = policy_model.generate(
@@ -557,7 +557,7 @@ if __name__ == "__main__":
         query = sample['query']
         
         # Generate response
-        inputs = tokenizer(query, return_tensors='pt').to(policy_model.device)
+        inputs = tokenizer(query, return_tensors='pt').to(next(policy_model.parameters()).device)
         
         with torch.no_grad():
             outputs = policy_model.generate(

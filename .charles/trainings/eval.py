@@ -23,15 +23,19 @@ def get_args():
     parser.add_argument("--top_k", type=int, default=int(os.environ.get("TOP_K", "4")), 
                         help="Top K parameter for SFT model path")
     parser.add_argument("--dpo", action="store_true", help="Use DPO model for evaluation")
+    parser.add_argument("--ppo", action="store_true", help="Use PPO model for evaluation")
     
     args = parser.parse_args()
     
-    # If both flags are provided, prioritize SFT
-    if args.sft and args.dpo:
+    # Priority order: SFT > DPO > PPO
+    if args.sft and (args.dpo or args.ppo):
         args.dpo = False
+        args.ppo = False
+    elif args.dpo and args.ppo:
+        args.ppo = False
     
     # Default to SFT if no specific option is provided
-    if not args.sft and not args.dpo:
+    if not args.sft and not args.dpo and not args.ppo:
         args.sft = True
     
     return args
@@ -44,8 +48,10 @@ TOP_K = args.top_k  # Command line argument overwrites .env configuration
 if args.sft:
     SFT_OUTPUT_DIR_PREFIX = os.environ.get("SFT_OUTPUT_DIR_PREFIX", "./.data/sft_full_top_")
     EVAL_MODEL_PATH = SFT_OUTPUT_DIR_PREFIX + str(TOP_K)
-else:  # DPO case
+elif args.dpo:
     EVAL_MODEL_PATH = os.environ.get("EVAL_MODEL_PATH", "./.data/dpo_qlora_merged")
+else:  # PPO case
+    EVAL_MODEL_PATH = os.environ.get("POLICY_MODEL_DIR", "./.data/policy_model")
 
 DATASET_NAME = os.environ.get("DATASET_NAME_COMPARISON", "CarperAI/openai_summarize_comparisons")
 NUM_TEST_SAMPLES = int(os.environ.get("NUM_TEST_SAMPLES", "200"))
@@ -60,7 +66,7 @@ if __name__ == "__main__":
     logger = setup_logger("evaluation_script")
 
     # Initialize wandb
-    model_type = "sft" if args.sft else "dpo"
+    model_type = "sft" if args.sft else ("dpo" if args.dpo else "ppo")
     model_id = os.environ.get("MODEL_ID", "unknown").split("/")[-1]  # Get just the model name
     wandb_run_name = f"eval_{model_id}_top_{TOP_K}_{model_type}_{NUM_TEST_SAMPLES}"
 
