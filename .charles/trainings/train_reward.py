@@ -209,6 +209,7 @@ if __name__ == "__main__":
     # --- 5. Create RewardTrainer ---
     logger.info("Creating TRL RewardTrainer...")
     
+    # TRL computes loss using Bradley-Terry preference loss internally
     trainer = RewardTrainer(
         model=model,
         args=reward_config,

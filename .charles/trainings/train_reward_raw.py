@@ -118,6 +118,7 @@ class RewardTrainer(Trainer):
         )
         
         # Compute preference loss (chosen should have higher reward than rejected)
+        # Bradley-Terry preference loss
         loss = -torch.log(torch.sigmoid(chosen_rewards - rejected_rewards)).mean()
         
         if return_outputs:
