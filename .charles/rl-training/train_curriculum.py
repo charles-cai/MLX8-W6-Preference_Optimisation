@@ -30,11 +30,19 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
+# Load environment variables FIRST, before other imports that might use them
+from dotenv import load_dotenv
+load_dotenv()  # Load .env file
+
 import torch
 from datasets import Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from loguru import logger
 from tqdm import tqdm
+
+# Suppress the gradient checkpointing + caching warning (expected behavior)
+import warnings
+warnings.filterwarnings("ignore", message=".*Caching is incompatible with gradient checkpointing.*")
 
 # Configure loguru for colorful output
 logger.remove()
@@ -70,6 +78,10 @@ from self_consistency import (
     save_generations_to_csv,
 )
 from prompts import load_prompts, get_available_presets
+
+import logging
+# Reduce transformers logging verbosity
+logging.getLogger("transformers.models.qwen3.modeling_qwen3").setLevel(logging.ERROR)
 
 
 # ============================================================================
@@ -164,6 +176,7 @@ def create_curriculum_prompts_dataset(
     system_prompt: str = "",
     user_prompt: str = "",
     tokenizer: Optional[AutoTokenizer] = None,
+    enable_thinking: bool = False,
 ) -> Dataset:
     """
     Create dataset of curriculum generation prompts.
@@ -188,6 +201,7 @@ def create_curriculum_prompts_dataset(
     prompts = []
     
     logger.info(f"📝 Creating {num_prompts} curriculum prompts...")
+    logger.info(f"   enable_thinking={enable_thinking}")
     
     for i in tqdm(range(num_prompts), desc="Creating prompts", unit="prompt"):
         messages = [
@@ -196,13 +210,35 @@ def create_curriculum_prompts_dataset(
         ]
         
         if tokenizer is not None:
-            prompt_str = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
+            # For Qwen3 models, enable_thinking=False adds empty <think></think> tags
+            # which instructs the model not to output thinking content
+            try:
+                prompt_str = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=enable_thinking,
+                )
+            except TypeError:
+                # Fallback for tokenizers that don't support enable_thinking
+                prompt_str = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                logger.warning("Tokenizer doesn't support enable_thinking - may get <think> tags in output")
         else:
             prompt_str = f"System: {system_prompt}\n\nUser: {user_prompt}\n\nAssistant:"
+        
+        # Log the first prompt to verify format
+        if i == 0:
+            logger.info(f"📋 First prompt (full):\n{prompt_str}")
+            logger.info(f"📋 Prompt length: {len(prompt_str)} chars")
+            # Verify thinking tags are present (for Qwen3 with enable_thinking=False)
+            if enable_thinking is False and '<think>' in prompt_str and '</think>' in prompt_str:
+                logger.success("✅ Empty thinking tags detected - model should NOT output <think>")
+            elif enable_thinking is False:
+                logger.warning("⚠️ No thinking tags in prompt - model may output <think> content")
         
         prompts.append({
             "prompt": prompt_str,
@@ -223,62 +259,56 @@ def sample_executor_responses(
     executor_tokenizer,
     task: str,
     k: int = 4,
-    max_new_tokens: int = 2048,
+    max_new_tokens: int = 512,  # Reduced from 2048 for faster sampling
     temperature: float = 1.0,
     executor_system_prompt: str = "",
+    enable_thinking: bool = False,
 ) -> List[str]:
     """
     Sample k responses from the executor agent for self-consistency computation.
-    
-    This implements the sampling step needed for computing p̂ (Eq 6).
-    The executor attempts to solve the task k times, and we use majority
-    voting to determine uncertainty.
-    
-    Paper Reference:
-        Section 3.2: "we compute its reward by sampling k responses 
-        {y_j}_{j=1}^k from the current Executor π_φ"
-        Eq 6: p̂(x) = (1/k) * Σ I(σ_i = ỹ)
-    
-    Args:
-        executor_model: Frozen executor model for response sampling
-        executor_tokenizer: Tokenizer for the executor
-        task: The problem/task to solve
-        k: Number of responses to sample (paper default: 10)
-        max_new_tokens: Maximum generation length
-        temperature: Sampling temperature (paper: 1.0)
-        executor_system_prompt: System prompt for executor
-    
-    Returns:
-        List of k response strings
+    Uses batched generation for speed.
     """
     messages = [
         {"role": "system", "content": executor_system_prompt or "Solve the following problem step by step. Put your final answer in \\boxed{}."},
         {"role": "user", "content": task},
     ]
     
-    prompt_text = executor_tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-    )
+    try:
+        prompt_text = executor_tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=enable_thinking,
+        )
+    except TypeError:
+        prompt_text = executor_tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    
     inputs = executor_tokenizer(prompt_text, return_tensors="pt").to(executor_model.device)
     
-    responses = []
+    # Batched generation: generate all k responses at once
+    outputs = executor_model.generate(
+        **inputs,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        do_sample=True,
+        top_p=0.95,
+        num_return_sequences=k,  # Generate k sequences in parallel
+        pad_token_id=executor_tokenizer.pad_token_id,
+    )
     
-    for _ in range(k):
-        outputs = executor_model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            do_sample=True,
-            top_p=0.99,  # Paper: top_p = 0.99
-            pad_token_id=executor_tokenizer.pad_token_id,
-        )
-        
+    responses = []
+    prompt_len = inputs['input_ids'].shape[1]
+    for i in range(k):
         response = executor_tokenizer.decode(
-            outputs[0][inputs['input_ids'].shape[1]:],
+            outputs[i][prompt_len:],
             skip_special_tokens=True,
         )
+        # Strip thinking tags
+        response = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL).strip()
         responses.append(response)
     
     return responses
@@ -317,6 +347,9 @@ class CurriculumRewardComputer:
         cap_tool: Maximum rewarded tool calls
     """
     
+    # Add __name__ for TRL GRPOTrainer compatibility
+    __name__ = "curriculum_reward"
+    
     def __init__(
         self,
         executor_model,
@@ -328,6 +361,7 @@ class CurriculumRewardComputer:
         cap_tool: int = 4,
         output_dir: str = "./outputs",
         executor_system_prompt: str = "",
+        enable_thinking: bool = False,  # Add this parameter
     ):
         """
         Initialize the curriculum reward computer.
@@ -342,6 +376,7 @@ class CurriculumRewardComputer:
             cap_tool: Max rewarded tool calls (paper: 4)
             output_dir: Directory for saving generation logs
             executor_system_prompt: System prompt for executor sampling
+            enable_thinking: Whether to enable Qwen3 thinking mode (default: False)
         """
         self.executor_model = executor_model
         self.executor_tokenizer = executor_tokenizer
@@ -353,6 +388,7 @@ class CurriculumRewardComputer:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.executor_system_prompt = executor_system_prompt
+        self.enable_thinking = enable_thinking  # Store the parameter
         self.generation_log = []
         self.call_count = 0
         self.batch_rewards = []
@@ -384,6 +420,21 @@ class CurriculumRewardComputer:
         """
         rewards = []
         self.call_count += 1
+        
+        # DEBUG: Log what we're receiving from GRPO
+        if self.call_count == 1:
+            logger.info("=" * 60)
+            logger.info("🔍 DEBUG: First batch from GRPO")
+            logger.info(f"   Number of prompts: {len(prompts)}")
+            logger.info(f"   Number of completions: {len(completions)}")
+            if prompts:
+                logger.info(f"   First prompt type: {type(prompts[0])}")
+                logger.info(f"   First prompt (last 200 chars): ...{str(prompts[0])[-200:]}")
+            if completions:
+                logger.info(f"   First completion type: {type(completions[0])}")
+                logger.info(f"   First completion (first 500 chars): {str(completions[0])[:500]}")
+                logger.info(f"   First completion (full length): {len(str(completions[0]))} chars")
+            logger.info("=" * 60)
         
         pbar = tqdm(
             zip(prompts, completions),
@@ -459,6 +510,7 @@ class CurriculumRewardComputer:
                 question,
                 k=self.k,
                 executor_system_prompt=self.executor_system_prompt,
+                enable_thinking=self.enable_thinking,  # Pass the parameter
             )
         except Exception as e:
             logger.error(f"Executor sampling failed: {e}")
@@ -549,7 +601,7 @@ def train_curriculum_agent(
     use_lora: bool = False,
     lora_r: int = 32,
     use_wandb: bool = True,
-    wandb_project: str = "agent0-curriculum",
+    wandb_project: str = None,
     wandb_run_name: Optional[str] = None,
     save_steps: int = 5,
     logging_steps: int = 1,
@@ -558,6 +610,9 @@ def train_curriculum_agent(
     gamma_tool: float = 0.6,
     cap_tool: int = 4,
     executor_k: int = 4,
+    ablation_mode: bool = False,
+    ablation_name: str = "baseline",
+    enable_thinking: bool = False,  # Add this parameter
 ):
     """
     Train the Curriculum Agent using GRPO.
@@ -594,12 +649,33 @@ def train_curriculum_agent(
         gamma_tool: Tool reward scale (paper: 0.6)
         cap_tool: Max rewarded tool calls (paper: 4)
         executor_k: Number of executor samples for p̂ (paper: 10)
-    
-    Returns:
-        Trained GRPOTrainer instance
+        ablation_mode: If True, save outputs to ablations/ subdirectory
+        ablation_name: Name for this ablation experiment
     """
+    # Validate num_generations (GRPO requires >= 2 for advantage calculation)
+    if num_generations < 2:
+        raise ValueError(
+            f"GRPO requires at least 2 generations per prompt to calculate advantages. "
+            f"Got num_generations={num_generations}. Please use --num_generations 2 or higher."
+        )
+    
+    # Get wandb_project from env if not provided
+    if wandb_project is None:
+        wandb_project = os.getenv("WANDB_PROJECT", "rl-hackathon-agent1")
+    
+    # Determine output directory based on ablation mode
+    if ablation_mode:
+        ablation_name = os.getenv("ABLATION_NAME", ablation_name)
+        base_output = Path(os.getenv("OUTPUT_DIR", "./outputs"))
+        output_dir = base_output / "ablations" / ablation_name / "curriculum"
+        logger.info(f"🔬 Ablation mode: {ablation_name}")
+    
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create checkpoints directory
+    checkpoints_dir = output_dir / "checkpoints"
+    checkpoints_dir.mkdir(parents=True, exist_ok=True)
     
     # Load prompts from TOML
     prompt_config = load_prompts(prompt_preset)
@@ -611,11 +687,21 @@ def train_curriculum_agent(
     
     # Initialize W&B
     if use_wandb and WANDB_AVAILABLE:
-        run_name = wandb_run_name or f"curriculum_{prompt_preset}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # Get run prefix from env
+        run_prefix = os.getenv("WANDB_RUN_PREFIX", "agent1")
+        wandb_dir = os.getenv("WANDB_DIR", "./.wandb")
+        
+        # Create wandb directory if needed
+        Path(wandb_dir).mkdir(parents=True, exist_ok=True)
+        
+        run_name = wandb_run_name or f"{run_prefix}-curriculum-{prompt_preset}-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         wandb.init(
             project=wandb_project,
             name=run_name,
+            dir=wandb_dir,
+            tags=["curriculum", prompt_preset, "agent1"],
             config={
+                "component": "curriculum",
                 "model_name": model_name,
                 "prompt_preset": prompt_preset,
                 "num_prompts": num_prompts,
@@ -661,6 +747,7 @@ def train_curriculum_agent(
         system_prompt=prompt_config.curriculum_system,
         user_prompt=prompt_config.curriculum_user,
         tokenizer=tokenizer,
+        enable_thinking=enable_thinking,  # Pass the parameter
     )
     
     # Create reward computer
@@ -676,16 +763,22 @@ def train_curriculum_agent(
         cap_tool=cap_tool,
         output_dir=str(output_dir),
         executor_system_prompt=prompt_config.executor_system,
+        enable_thinking=enable_thinking,  # Add this line
     )
     
     # Create GRPO config
+    # TRL GRPO requires: per_device_train_batch_size must be divisible by num_generations
+    # Each unique prompt gets num_generations rollouts
+    # So effective prompts per batch = per_device_train_batch_size / num_generations
+    effective_batch_size = per_device_batch_size * num_generations  # This ensures divisibility
+    
     config = Agent0GRPOConfig(
         output_dir=str(output_dir),
         num_generations=num_generations,
-        max_new_tokens=2048,
+        max_completion_length=2048,
         temperature=1.0,
         learning_rate=learning_rate,
-        per_device_train_batch_size=per_device_batch_size,
+        per_device_train_batch_size=effective_batch_size,  # Must be divisible by num_generations
         gradient_accumulation_steps=gradient_accumulation_steps,
         max_steps=max_steps,
         logging_steps=logging_steps,
@@ -696,6 +789,13 @@ def train_curriculum_agent(
         weight_decay=0.01,
     )
     
+    # Log the effective configuration
+    logger.info(f"  📊 GRPO batch config:")
+    logger.info(f"     per_device_train_batch_size: {effective_batch_size}")
+    logger.info(f"     num_generations: {num_generations}")
+    logger.info(f"     unique prompts per batch: {effective_batch_size // num_generations}")
+    logger.info(f"     gradient_accumulation_steps: {gradient_accumulation_steps}")
+    
     trainer = create_grpo_trainer(
         model=curriculum_model,
         tokenizer=tokenizer,
@@ -703,10 +803,6 @@ def train_curriculum_agent(
         reward_funcs=[reward_computer],
         config=config,
     )
-    
-    # Train
-    logger.info("=" * 60)
-    logger.info("🏋️ Starting training...")
     logger.info(f"  📦 Model: {model_name}")
     logger.info(f"  📝 Preset: {prompt_config.name}")
     logger.info(f"  🔢 Steps: {max_steps}")
@@ -764,35 +860,76 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-0.6B")
+    # Load defaults from .env
+    parser.add_argument("--model_name", type=str, 
+                        default=os.getenv("MODEL_ID", "Qwen/Qwen3-0.6B"),
+                        help="Model name (use instruct models like Qwen/Qwen3-0.6B, not *-Base)")
     parser.add_argument("--executor_model_path", type=str, default=None)
-    parser.add_argument("--output_dir", type=str, default="./outputs/curriculum")
+    parser.add_argument("--output_dir", type=str, 
+                        default=os.path.join(os.getenv("OUTPUT_DIR", "./outputs"), "curriculum"))
     
     # Prompt configuration
     available_presets = get_available_presets() if PROMPTS_FILE.exists() else ["math", "data_scientist"]
     parser.add_argument("--prompt_preset", type=str, 
                         default=os.getenv("PROMPT_PRESET", "data_scientist"),
                         choices=available_presets,
-                        help=f"Prompt preset from prompts.toml")
+                        help="Prompt preset from prompts.toml")
     
-    parser.add_argument("--num_prompts", type=int, default=100)
-    parser.add_argument("--num_generations", type=int, default=4)
-    parser.add_argument("--max_steps", type=int, default=10)
-    parser.add_argument("--learning_rate", type=float, default=1e-6)
-    parser.add_argument("--per_device_batch_size", type=int, default=2)
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
-    parser.add_argument("--use_lora", action="store_true")
-    parser.add_argument("--lora_r", type=int, default=32)
-    parser.add_argument("--no_wandb", action="store_true")
-    parser.add_argument("--wandb_project", type=str, default="agent0-curriculum")
+    # Training parameters - load from env
+    parser.add_argument("--num_prompts", type=int, 
+                        default=int(os.getenv("CURRICULUM_NUM_PROMPTS", "100")))
+    parser.add_argument("--num_generations", type=int, 
+                        default=int(os.getenv("NUM_GENERATIONS", "2")),
+                        help="Number of GRPO rollouts per prompt (minimum: 2)")
+    parser.add_argument("--max_steps", type=int, 
+                        default=int(os.getenv("CURRICULUM_MAX_STEPS", "10")))
+    parser.add_argument("--learning_rate", type=float, 
+                        default=float(os.getenv("LEARNING_RATE", "1e-6")))
+    parser.add_argument("--per_device_batch_size", type=int, 
+                        default=int(os.getenv("PER_DEVICE_BATCH_SIZE", "2")))
+    parser.add_argument("--gradient_accumulation_steps", type=int, 
+                        default=int(os.getenv("GRADIENT_ACCUMULATION_STEPS", "2")))
+    
+    # LoRA settings
+    parser.add_argument("--use_lora", action="store_true",
+                        default=os.getenv("USE_LORA", "false").lower() == "true")
+    parser.add_argument("--lora_r", type=int, 
+                        default=int(os.getenv("LORA_R", "32")))
+    
+    # W&B settings
+    parser.add_argument("--no_wandb", action="store_true",
+                        default=os.getenv("USE_WANDB", "true").lower() != "true")
+    parser.add_argument("--wandb_project", type=str, 
+                        default=os.getenv("WANDB_PROJECT", "rl-hackathon-agent1"))
     parser.add_argument("--wandb_run_name", type=str, default=None)
-    parser.add_argument("--save_steps", type=int, default=5)
-    parser.add_argument("--logging_steps", type=int, default=1)
-    parser.add_argument("--lambda_unc", type=float, default=1.0)
-    parser.add_argument("--lambda_tool", type=float, default=0.6)
-    parser.add_argument("--gamma_tool", type=float, default=0.6)
-    parser.add_argument("--cap_tool", type=int, default=4)
-    parser.add_argument("--executor_k", type=int, default=4)
+    
+    # Checkpointing
+    parser.add_argument("--save_steps", type=int, 
+                        default=int(os.getenv("SAVE_STEPS", "5")))
+    parser.add_argument("--logging_steps", type=int, 
+                        default=int(os.getenv("LOGGING_STEPS", "1")))
+    
+    # Reward parameters - load from env
+    parser.add_argument("--lambda_unc", type=float, 
+                        default=float(os.getenv("LAMBDA_UNC", "1.0")))
+    parser.add_argument("--lambda_tool", type=float, 
+                        default=float(os.getenv("LAMBDA_TOOL", "0.6")))
+    parser.add_argument("--gamma_tool", type=float, 
+                        default=float(os.getenv("GAMMA_TOOL", "0.6")))
+    parser.add_argument("--cap_tool", type=int, 
+                        default=int(os.getenv("CAP_TOOL", "4")))
+    parser.add_argument("--executor_k", type=int, 
+                        default=int(os.getenv("EXECUTOR_K", "2")))
+    
+    # Ablation study arguments
+    parser.add_argument("--ablation_mode", action="store_true",
+                        default=os.getenv("ABLATION_MODE", "false").lower() == "true")
+    parser.add_argument("--ablation_name", type=str,
+                        default=os.getenv("ABLATION_NAME", "baseline"))
+    
+    # Qwen3 thinking mode control
+    parser.add_argument("--enable_thinking", action="store_true",
+                        default=os.getenv("ENABLE_THINKING", "false").lower() == "true")
     
     return parser.parse_args()
 
@@ -802,9 +939,7 @@ PROMPTS_FILE = Path(__file__).parent / "prompts.toml"
 
 
 def main():
-    """Main entry point."""
     args = parse_args()
-    
     train_curriculum_agent(
         model_name=args.model_name,
         executor_model_path=args.executor_model_path,
@@ -828,6 +963,9 @@ def main():
         gamma_tool=args.gamma_tool,
         cap_tool=args.cap_tool,
         executor_k=args.executor_k,
+        ablation_mode=args.ablation_mode,
+        ablation_name=args.ablation_name,
+        enable_thinking=args.enable_thinking,
     )
 
 

@@ -18,6 +18,10 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
+# Load environment variables FIRST
+from dotenv import load_dotenv
+load_dotenv()
+
 import torch
 from datasets import Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -134,6 +138,7 @@ def generate_task_pool(
     max_new_tokens: int = 2048,
     temperature: float = 1.0,
     system_prompt: Optional[str] = None,
+    enable_thinking: bool = False,
 ) -> List[str]:
     """Generate a pool of tasks from the frozen curriculum agent."""
     if system_prompt is None:
@@ -148,14 +153,25 @@ def generate_task_pool(
         {"role": "user", "content": user_prompt},
     ]
     
-    prompt_text = curriculum_tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-    )
+    # Apply chat template with thinking mode EXPLICITLY disabled
+    try:
+        prompt_text = curriculum_tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=enable_thinking,
+        )
+    except TypeError:
+        prompt_text = curriculum_tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        logger.warning("Tokenizer doesn't support enable_thinking parameter")
     
     tasks = []
     logger.info(f"📝 Generating {num_tasks} tasks from curriculum agent...")
+    logger.info(f"   enable_thinking={enable_thinking}")
     
     for i in tqdm(range(num_tasks), desc="Generating tasks", unit="task"):
         inputs = curriculum_tokenizer(prompt_text, return_tensors="pt").to(curriculum_model.device)
@@ -173,6 +189,10 @@ def generate_task_pool(
             outputs[0][inputs['input_ids'].shape[1]:],
             skip_special_tokens=True,
         )
+        
+        # Strip any <think>...</think> tags from output (safety net)
+        task = re.sub(r'<think>.*?</think>', '', task, flags=re.DOTALL).strip()
+        
         tasks.append(task)
     
     logger.success(f"✅ Generated {len(tasks)} tasks")
@@ -187,18 +207,31 @@ def sample_executor_responses(
     k: int = 4,
     max_new_tokens: int = 2048,
     temperature: float = 1.0,
+    executor_system_prompt: str = "",
+    enable_thinking: bool = False,
 ) -> List[str]:
     """Sample k responses from executor for a given question."""
+    system_prompt = executor_system_prompt or "Solve the following problem step by step. Put your final answer in \\boxed{}."
+    
     messages = [
-        {"role": "system", "content": "Solve the following problem step by step. Put your final answer in \\boxed{}."},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": question},
     ]
     
-    prompt_text = executor_tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-    )
+    try:
+        prompt_text = executor_tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=enable_thinking,
+        )
+    except TypeError:
+        prompt_text = executor_tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    
     inputs = executor_tokenizer(prompt_text, return_tensors="pt").to(executor_model.device)
     
     responses = []
@@ -216,6 +249,10 @@ def sample_executor_responses(
             outputs[0][inputs['input_ids'].shape[1]:],
             skip_special_tokens=True,
         )
+        
+        # Strip thinking tags
+        response = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL).strip()
+        
         responses.append(response)
     
     return responses
@@ -232,6 +269,7 @@ def curate_frontier_dataset(
     k: int = 4,
     delta: float = 0.25,
     output_dir: Optional[str] = None,
+    executor_system_prompt: str = "",
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Curate frontier dataset by filtering tasks based on self-consistency."""
     logger.info(f"🔍 Curating frontier dataset from {len(tasks)} tasks...")
@@ -254,6 +292,7 @@ def curate_frontier_dataset(
                 executor_tokenizer,
                 question,
                 k=k,
+                executor_system_prompt=executor_system_prompt,
             )
         except Exception as e:
             logger.error(f"Task {idx}: Failed to sample responses: {e}")
@@ -316,9 +355,11 @@ def curate_frontier_dataset(
 def create_executor_training_dataset(
     frontier_tasks: List[Dict[str, Any]],
     tokenizer: AutoTokenizer,
+    executor_system_prompt: str = "",
 ) -> Dataset:
     """Create training dataset for executor from frontier tasks."""
     samples = []
+    system_prompt = executor_system_prompt or "Solve the following problem step by step. Put your final answer in \\boxed{}."
     
     for task in tqdm(frontier_tasks, desc="Creating training dataset", unit="task"):
         question = task.get("question", "")
@@ -329,7 +370,7 @@ def create_executor_training_dataset(
             continue
         
         messages = [
-            {"role": "system", "content": "Solve the following problem step by step. Put your final answer in \\boxed{}."},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": question},
         ]
         
@@ -356,6 +397,9 @@ def create_executor_training_dataset(
 
 class ExecutorRewardComputer:
     """Computes executor reward based on answer correctness."""
+    
+    # Add __name__ for TRL GRPOTrainer compatibility
+    __name__ = "executor_reward"
     
     def __init__(
         self,
@@ -486,6 +530,7 @@ def train_executor_agent(
     model_name: str = "Qwen/Qwen3-0.6B",
     curriculum_model_path: Optional[str] = None,
     output_dir: str = "./outputs/executor",
+    prompt_preset: str = "data_scientist",
     num_tasks: int = 200,
     k_samples: int = 4,
     delta: float = 0.25,
@@ -497,37 +542,307 @@ def train_executor_agent(
     use_lora: bool = False,
     lora_r: int = 32,
     use_wandb: bool = True,
-    wandb_project: str = "agent0-executor",
+    wandb_project: str = None,
     wandb_run_name: Optional[str] = None,
     save_steps: int = 10,
     logging_steps: int = 1,
     use_adpo_scaling: bool = False,
 ):
-    """Train the Executor Agent using GRPO."""
+    """
+    Train the Executor Agent using GRPO.
+    
+    Implements Algorithm 1, Lines 11-24 (Executor Evolution) from the paper.
+    """
+    # Get wandb_project from env if not provided
+    if wandb_project is None:
+        wandb_project = os.getenv("WANDB_PROJECT", "rl-hackathon-agent1")
+    
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    # Create checkpoints directory
+    checkpoints_dir = output_dir / "checkpoints"
+    checkpoints_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Load prompts from TOML
+    from prompts import load_prompts
+    prompt_config = load_prompts(prompt_preset)
+    
     logger.info("=" * 60)
     logger.info("🚀 EXECUTOR AGENT TRAINING")
+    logger.info(f"   Prompt Preset: {prompt_config.name}")
     logger.info("=" * 60)
     
     # Initialize W&B
     if use_wandb and WANDB_AVAILABLE:
-        run_name = wandb_run_name or f"executor_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        run_prefix = os.getenv("WANDB_RUN_PREFIX", "agent1")
+        wandb_dir = os.getenv("WANDB_DIR", "./.wandb")
+        Path(wandb_dir).mkdir(parents=True, exist_ok=True)
+        
+        run_name = wandb_run_name or f"{run_prefix}-executor-{prompt_preset}-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         wandb.init(
             project=wandb_project,
             name=run_name,
+            dir=wandb_dir,
+            tags=["executor", prompt_preset, "agent1"],
             config={
+                "component": "executor",
                 "model_name": model_name,
-                "curriculum_model_path": curriculum_model_path,
+                "prompt_preset": prompt_preset,
                 "num_tasks": num_tasks,
                 "k_samples": k_samples,
                 "delta": delta,
-                "num_generations": num_generations,
                 "max_steps": max_steps,
                 "learning_rate": learning_rate,
-                "use_lora": use_lora,
-                "use_adpo_scaling": use_adpo_scaling,
             }
         )
-        logger.success(f"📊 W
+        logger.success(f"📊 W&B initialized: {wandb_project}/{run_name}")
+    elif use_wandb and not WANDB_AVAILABLE:
+        logger.warning("⚠️ wandb requested but not available")
+        use_wandb = False
+    
+    # Load executor model (trainable)
+    logger.info("=" * 60)
+    logger.info("📦 Loading executor model (trainable)...")
+    executor_model, tokenizer = load_model_and_tokenizer(
+        model_name,
+        use_lora=use_lora,
+        lora_r=lora_r,
+    )
+    
+    # Load curriculum model (frozen) for task generation
+    logger.info("=" * 60)
+    logger.info("📦 Loading curriculum model (frozen)...")
+    curriculum_path = curriculum_model_path or model_name
+    curriculum_model, curriculum_tokenizer = load_model_and_tokenizer(
+        curriculum_path,
+        use_lora=False,
+    )
+    curriculum_model.eval()
+    for param in curriculum_model.parameters():
+        param.requires_grad = False
+    logger.info("🔒 Curriculum model frozen")
+    
+    # Generate task pool from curriculum agent
+    logger.info("=" * 60)
+    tasks = generate_task_pool(
+        curriculum_model,
+        curriculum_tokenizer,
+        num_tasks=num_tasks,
+        system_prompt=prompt_config.curriculum_system,
+    )
+    
+    # Curate frontier dataset
+    logger.info("=" * 60)
+    frontier_tasks, all_tasks = curate_frontier_dataset(
+        tasks=tasks,
+        executor_model=executor_model,
+        executor_tokenizer=tokenizer,
+        k=k_samples,
+        delta=delta,
+        output_dir=str(output_dir),
+        executor_system_prompt=prompt_config.executor_system,
+    )
+    
+    if len(frontier_tasks) == 0:
+        logger.error("❌ No frontier tasks found! Try adjusting delta or generating more tasks.")
+        return None
+    
+    # Create training dataset
+    train_dataset = create_executor_training_dataset(
+        frontier_tasks=frontier_tasks,
+        tokenizer=tokenizer,
+        executor_system_prompt=prompt_config.executor_system,
+    )
+    
+    # Create reward computer
+    logger.info("=" * 60)
+    logger.info("⚙️ Creating reward computer...")
+    reward_computer = ExecutorRewardComputer(
+        output_dir=str(output_dir),
+        use_adpo_scaling=use_adpo_scaling,
+    )
+    reward_computer.set_pseudo_labels(train_dataset)
+    
+    # Create GRPO config
+    config = Agent0GRPOConfig(
+        output_dir=str(output_dir),
+        num_generations=num_generations,
+        max_completion_length=2048,  # Changed from max_new_tokens
+        temperature=1.0,
+        learning_rate=learning_rate,
+        per_device_train_batch_size=per_device_batch_size * num_generations,  # Must be divisible by num_generations
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        max_steps=max_steps,
+        logging_steps=logging_steps,
+        save_steps=save_steps,
+        bf16=True,
+        gradient_checkpointing=True,
+        report_to="wandb" if use_wandb else "none",
+        weight_decay=0.01,
+    )
+    
+    trainer = create_grpo_trainer(
+        model=executor_model,
+        tokenizer=tokenizer,
+        train_dataset=train_dataset,
+        reward_funcs=[reward_computer],
+        config=config,
+    )
+    
+    logger.info(f"  📦 Model: {model_name}")
+    logger.info(f"  📝 Preset: {prompt_config.name}")
+    logger.info(f"  🔢 Steps: {max_steps}")
+    logger.info(f"  📊 Frontier tasks: {len(frontier_tasks)}")
+    logger.info(f"  🎲 Rollouts: {num_generations}")
+    logger.info("=" * 60)
+    
+    try:
+        trainer.train()
+    except KeyboardInterrupt:
+        logger.warning("⚠️ Training interrupted by user")
+    except Exception as e:
+        logger.error(f"❌ Training failed: {e}")
+        raise
+    finally:
+        reward_computer.save_logs("_final")
+        
+        final_path = output_dir / "final_model"
+        trainer.save_model(str(final_path))
+        tokenizer.save_pretrained(str(final_path))
+        logger.success(f"💾 Saved final model to {final_path}")
+        
+        training_info = {
+            "model_name": model_name,
+            "prompt_preset": prompt_preset,
+            "prompt_config_name": prompt_config.name,
+            "curriculum_model_path": curriculum_path,
+            "output_dir": str(output_dir),
+            "num_tasks": num_tasks,
+            "frontier_tasks": len(frontier_tasks),
+            "k_samples": k_samples,
+            "delta": delta,
+            "max_steps": max_steps,
+            "timestamp": datetime.now().isoformat(),
+        }
+        with open(output_dir / "training_info.json", 'w') as f:
+            json.dump(training_info, f, indent=2)
+    
+    if use_wandb and WANDB_AVAILABLE:
+        wandb.finish()
+    
+    logger.info("=" * 60)
+    logger.success("✅ Executor agent training complete!")
+    logger.info("=" * 60)
+    
+    return trainer
+
+
+# ============================================================================
+# CLI
+# ============================================================================
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Train Agent0 Executor Agent",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    
+    # Load defaults from .env
+    parser.add_argument("--model_name", type=str, 
+                        default=os.getenv("MODEL_ID", "Qwen/Qwen3-0.6B"),
+                        help="Model name (use instruct models like Qwen/Qwen3-0.6B, not *-Base)")
+    parser.add_argument("--curriculum_model_path", type=str, default=None,
+                        help="Path to trained curriculum model")
+    parser.add_argument("--output_dir", type=str, 
+                        default=os.path.join(os.getenv("OUTPUT_DIR", "./outputs"), "executor"))
+    
+    # Prompt configuration
+    parser.add_argument("--prompt_preset", type=str,
+                        default=os.getenv("PROMPT_PRESET", "data_scientist"),
+                        help="Prompt preset from prompts.toml")
+    
+    # Task generation parameters
+    parser.add_argument("--num_tasks", type=int, 
+                        default=int(os.getenv("EXECUTOR_NUM_TASKS", "200")),
+                        help="Number of tasks to generate from curriculum")
+    parser.add_argument("--k_samples", type=int, 
+                        default=int(os.getenv("EXECUTOR_K", "2")),
+                        help="Number of samples for self-consistency")
+    parser.add_argument("--delta", type=float, 
+                        default=float(os.getenv("DELTA", "0.25")),
+                        help="Frontier filtering threshold")
+    
+    # Training parameters - load from env (shared with curriculum)
+    parser.add_argument("--num_generations", type=int, 
+                        default=int(os.getenv("NUM_GENERATIONS", "2")),
+                        help="GRPO rollouts per prompt")
+    parser.add_argument("--max_steps", type=int, 
+                        default=int(os.getenv("EXECUTOR_MAX_STEPS", "40")))
+    parser.add_argument("--learning_rate", type=float, 
+                        default=float(os.getenv("LEARNING_RATE", "1e-6")))
+    parser.add_argument("--per_device_batch_size", type=int, 
+                        default=int(os.getenv("PER_DEVICE_BATCH_SIZE", "2")))
+    parser.add_argument("--gradient_accumulation_steps", type=int, 
+                        default=int(os.getenv("GRADIENT_ACCUMULATION_STEPS", "2")))
+    
+    # LoRA settings (shared)
+    parser.add_argument("--use_lora", action="store_true",
+                        default=os.getenv("USE_LORA", "false").lower() == "true")
+    parser.add_argument("--lora_r", type=int, 
+                        default=int(os.getenv("LORA_R", "32")))
+    
+    # W&B settings (shared)
+    parser.add_argument("--no_wandb", action="store_true",
+                        default=os.getenv("USE_WANDB", "true").lower() != "true")
+    parser.add_argument("--wandb_project", type=str,
+                        default=os.getenv("WANDB_PROJECT", "rl-hackathon-agent1"))
+    parser.add_argument("--wandb_run_name", type=str, default=None)
+    
+    # Checkpointing (shared)
+    parser.add_argument("--save_steps", type=int, 
+                        default=int(os.getenv("SAVE_STEPS", "10")))
+    parser.add_argument("--logging_steps", type=int, 
+                        default=int(os.getenv("LOGGING_STEPS", "1")))
+    
+    # ADPO scaling
+    parser.add_argument("--use_adpo_scaling", action="store_true",
+                        help="Use ADPO-style p̂ scaling for advantages")
+    
+    # Thinking mode (shared)
+    parser.add_argument("--enable_thinking", action="store_true",
+                        default=os.getenv("ENABLE_THINKING", "false").lower() == "true")
+    
+    return parser.parse_args()
+
+
+def main():
+    """Main entry point."""
+    args = parse_args()
+    
+    train_executor_agent(
+        model_name=args.model_name,
+        curriculum_model_path=args.curriculum_model_path,
+        output_dir=args.output_dir,
+        prompt_preset=args.prompt_preset,
+        num_tasks=args.num_tasks,
+        k_samples=args.k_samples,
+        delta=args.delta,
+        num_generations=args.num_generations,
+        max_steps=args.max_steps,
+        learning_rate=args.learning_rate,
+        per_device_batch_size=args.per_device_batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        use_lora=args.use_lora,
+        lora_r=args.lora_r,
+        use_wandb=not args.no_wandb,
+        wandb_project=args.wandb_project,
+        wandb_run_name=args.wandb_run_name,
+        save_steps=args.save_steps,
+        logging_steps=args.logging_steps,
+        use_adpo_scaling=args.use_adpo_scaling,
+    )
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,50 @@
+uv run debug_thinking.py 
+Loading Qwen/Qwen3-1.7B...
+Loading checkpoint shards: 100%|███████████████████████████████████████████████████████| 2/2 [00:00<00:00,  2.84it/s]
+
+============================================================
+TEST 1: enable_thinking=True (default)
+============================================================
+Prompt ends with: ...nerator.<|im_end|>
+<|im_start|>user
+Generate a simple math problem.<|im_end|>
+<|im_start|>assistant
+
+
+Response (first 300 chars):
+<think>
+Okay, the user wants me to generate a simple math problem. Let me think about what's considered simple. Maybe something basic like addition, subtraction, multiplication, or division. Let me pick addition first. 
+
+Hmm, maybe a problem with two numbers, like 5 + 3. But wait, maybe the user wan
+
+Contains <think>: True
+
+============================================================
+TEST 2: enable_thinking=False
+============================================================
+Prompt ends with: ...<|im_start|>user
+Generate a simple math problem.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+
+
+Prompts are different: True
+Length difference: 144 vs 163
+
+Response (first 300 chars):
+Sure! Here's a simple math problem:
+
+**Problem:**  
+What is the result of 15 + 27?
+
+Contains <think>: False
+
+============================================================
+TEST 3: Special tokens info
+============================================================
+Tokenizer class: Qwen2TokenizerFast
+Has chat_template: True
+Think-related tokens: ['<think>', '</think>']

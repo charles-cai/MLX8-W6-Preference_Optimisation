@@ -1,5 +1,5 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
-model_name = "Qwen/Qwen3-0.6B"  # Change to "Qwen/Qwen3-1.7B" for the larger model, note Qwen3-0.6-Base are not instruction tuned, will generate garrbish. 
+model_name = "Qwen/Qwen3-1.7B"  # Change to "Qwen/Qwen3-1.7B" for the larger model, note Qwen3-0.6-Base are not instruction tuned, will generate garrbish. 
 
 # load the tokenizer and the model
 tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -10,7 +10,7 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 
 # prepare the model input
-prompt = "Why the sky is blue?"
+prompt = "Generate 5x data science questions for my Machine Learning class student." #"Why the sky is blue?"
 messages = [
     {"role": "user", "content": prompt}
 ]

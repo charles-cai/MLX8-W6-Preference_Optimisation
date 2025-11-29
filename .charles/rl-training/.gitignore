@@ -1,0 +1,26 @@
+# Weights & Biases
+.wandb/
+wandb/
+
+# Outputs
+outputs/
+*.jsonl
+*.csv
+
+# Logs
+logs/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment
+.env
+
+# Models
+*.safetensors
+*.bin
+*.pt
+*.pth

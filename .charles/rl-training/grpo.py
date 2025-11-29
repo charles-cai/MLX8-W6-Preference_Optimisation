@@ -1,12 +1,16 @@
 """
-GRPO (Group Relative Policy Optimization) Trainer for Agent0.
+GRPO (Group Relative Policy Optimization) Trainer for Agent1.
 Implements Eq 1 from the paper: clipped policy loss with group-relative advantages.
 
 Uses TRL's GRPOTrainer as the foundation, with custom reward functions.
 """
 
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 import torch
-from typing import Optional, Callable, List, Dict, Any
+from typing import Optional, Callable, List
 from dataclasses import dataclass, field
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from trl import GRPOTrainer, GRPOConfig as TRLGRPOConfig
@@ -14,31 +18,54 @@ from datasets import Dataset
 from loguru import logger
 
 
+def _get_env_int(key: str, default: int) -> int:
+    """Get integer from environment variable."""
+    val = os.getenv(key)
+    return int(val) if val else default
+
+
+def _get_env_float(key: str, default: float) -> float:
+    """Get float from environment variable."""
+    val = os.getenv(key)
+    return float(val) if val else default
+
+
+def _get_env_bool(key: str, default: bool) -> bool:
+    """Get boolean from environment variable."""
+    val = os.getenv(key, str(default).lower())
+    return val.lower() in ("true", "1", "yes")
+
+
 @dataclass
-class Agent0GRPOConfig(TRLGRPOConfig):
-    """Extended GRPO config for Agent0 with paper-specific defaults."""
+class Agent1GRPOConfig(TRLGRPOConfig):
+    """Extended GRPO config for Agent1 with paper-specific defaults."""
     
-    # Agent0 paper defaults (Table 8)
-    num_generations: int = 4  # k=4 rollouts for self-consistency
-    max_new_tokens: int = 4096  # Long-form reasoning
-    temperature: float = 1.0  # Sampling temperature
+    # Load defaults from environment
+    num_generations: int = field(default_factory=lambda: _get_env_int("NUM_GENERATIONS", 4))
+    max_completion_length: int = field(default_factory=lambda: _get_env_int("MAX_COMPLETION_LENGTH", 2048))
     
-    # GRPO clipping (Eq 1)
-    epsilon: float = 0.2  # PPO-style clipping
+    # Generation parameters - explicitly set to override model defaults
+    temperature: float = 1.0  # Paper default, higher for diversity
+    top_p: float = 0.99  # Near 1.0 for broad sampling
+    top_k: int = None  # Disable top_k to use top_p
     
-    # Training defaults for 0.6B model
-    per_device_train_batch_size: int = 2
-    gradient_accumulation_steps: int = 4  # Effective batch = 8
-    learning_rate: float = 1e-6
+    # GRPO clipping
+    epsilon: float = 0.2
+    
+    per_device_train_batch_size: int = field(default_factory=lambda: _get_env_int("PER_DEVICE_BATCH_SIZE", 2) * _get_env_int("NUM_GENERATIONS", 4))
+    gradient_accumulation_steps: int = field(default_factory=lambda: _get_env_int("GRADIENT_ACCUMULATION_STEPS", 2))
+    learning_rate: float = field(default_factory=lambda: _get_env_float("LEARNING_RATE", 1e-6))
     num_train_epochs: int = 1
     
-    # Memory optimization for hackathon setup
     bf16: bool = True
-    gradient_checkpointing: bool = True
+    gradient_checkpointing: bool = field(default_factory=lambda: _get_env_bool("GRADIENT_CHECKPOINTING", True))
     
-    # Logging
-    logging_steps: int = 10
-    save_steps: int = 100
+    logging_steps: int = field(default_factory=lambda: _get_env_int("LOGGING_STEPS", 1))
+    save_steps: int = field(default_factory=lambda: _get_env_int("SAVE_STEPS", 5))
+
+
+# Alias for backward compatibility
+Agent0GRPOConfig = Agent1GRPOConfig
 
 
 def create_grpo_trainer(
@@ -46,31 +73,34 @@ def create_grpo_trainer(
     tokenizer: PreTrainedTokenizerBase,
     train_dataset: Dataset,
     reward_funcs: List[Callable],
-    config: Optional[Agent0GRPOConfig] = None,
+    config: Optional[Agent1GRPOConfig] = None,
     eval_dataset: Optional[Dataset] = None,
 ) -> GRPOTrainer:
-    """
-    Create a GRPO trainer with Agent0-specific configuration.
-    
-    Args:
-        model: The policy model (Qwen3-0.6B)
-        tokenizer: Tokenizer for the model
-        train_dataset: Dataset with 'prompt' column
-        reward_funcs: List of reward functions [r1, r2, ...] 
-                     Each takes (prompts, completions, **kwargs) -> List[float]
-        config: GRPO configuration
-        eval_dataset: Optional evaluation dataset
-    
-    Returns:
-        Configured GRPOTrainer instance
-    """
+    """Create a GRPO trainer with Agent1-specific configuration."""
     if config is None:
-        config = Agent0GRPOConfig(output_dir="./agent0_grpo_output")
+        config = Agent1GRPOConfig(output_dir="./agent1_grpo_output")
     
-    # Ensure tokenizer has pad token
+    # Validate batch size vs num_generations
+    if config.per_device_train_batch_size % config.num_generations != 0:
+        old_batch = config.per_device_train_batch_size
+        config.per_device_train_batch_size = config.num_generations
+        logger.warning(
+            f"⚠️ per_device_train_batch_size ({old_batch}) must be divisible by "
+            f"num_generations ({config.num_generations}). Adjusted to {config.per_device_train_batch_size}."
+        )
+    
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         logger.info("Set pad_token to eos_token")
+    
+    # Override model's generation_config to use our settings
+    if hasattr(model, 'generation_config'):
+        model.generation_config.temperature = config.temperature
+        model.generation_config.top_p = config.top_p
+        if config.top_k is not None:
+            model.generation_config.top_k = config.top_k
+        model.generation_config.do_sample = True
+        logger.info(f"🔧 Override model generation_config: temperature={config.temperature}, top_p={config.top_p}")
     
     trainer = GRPOTrainer(
         model=model,
@@ -83,7 +113,8 @@ def create_grpo_trainer(
     
     logger.info(f"Created GRPO trainer with {len(reward_funcs)} reward functions")
     logger.info(f"Config: k={config.num_generations}, batch={config.per_device_train_batch_size}, "
-                f"grad_accum={config.gradient_accumulation_steps}")
+                f"grad_accum={config.gradient_accumulation_steps}, max_completion={config.max_completion_length}")
+    logger.info(f"Generation: temperature={config.temperature}, top_p={config.top_p}")
     
     return trainer
 
@@ -92,36 +123,16 @@ def compute_group_advantages(
     rewards: torch.Tensor,
     group_size: int = 4,
 ) -> torch.Tensor:
-    """
-    Compute group-relative advantages for GRPO (Eq 1).
-    
-    For each group of k responses to the same prompt, normalize advantages:
-    A_i = (r_i - mean(r)) / (std(r) + eps)
-    
-    Args:
-        rewards: Tensor of shape [batch_size * group_size]
-        group_size: Number of generations per prompt (k)
-    
-    Returns:
-        Normalized advantages of same shape
-    """
-    # Reshape to [num_prompts, group_size]
+    """Compute group-relative advantages for GRPO (Eq 1)."""
     num_prompts = rewards.shape[0] // group_size
     rewards_grouped = rewards.view(num_prompts, group_size)
-    
-    # Compute group statistics
     mean = rewards_grouped.mean(dim=1, keepdim=True)
     std = rewards_grouped.std(dim=1, keepdim=True)
-    
-    # Normalize (with stability epsilon)
     advantages = (rewards_grouped - mean) / (std + 1e-8)
-    
-    # Flatten back
     return advantages.view(-1)
 
 
 if __name__ == "__main__":
-    # Quick sanity check
     rewards = torch.tensor([1.0, 2.0, 3.0, 4.0, 0.5, 1.5, 2.5, 3.5])
     advantages = compute_group_advantages(rewards, group_size=4)
     print(f"Rewards: {rewards}")

@@ -19,12 +19,12 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-import torch
+# Load environment variables FIRST
 from dotenv import load_dotenv
-from loguru import logger
-
-# Load environment variables
 load_dotenv()
+
+import torch
+from loguru import logger
 
 # Optional W&B
 try:
@@ -51,6 +51,10 @@ def run_curriculum_training(
     
     iter_output_dir = Path(output_dir) / f"curriculum_iter{iteration}"
     
+    # Get wandb_project from kwargs or env
+    wandb_project = kwargs.get("wandb_project") or os.getenv("WANDB_PROJECT", "rl-hackathon-agent1")
+    run_prefix = os.getenv("WANDB_RUN_PREFIX", "agent1")
+    
     logger.info(f"=" * 60)
     logger.info(f"CURRICULUM AGENT TRAINING - Iteration {iteration}")
     logger.info(f"=" * 60)
@@ -68,8 +72,8 @@ def run_curriculum_training(
         use_lora=kwargs.get("use_lora", False),
         lora_r=kwargs.get("lora_r", 32),
         use_wandb=kwargs.get("use_wandb", True),
-        wandb_project=kwargs.get("wandb_project", "agent0-hackathon"),
-        wandb_run_name=f"curriculum_iter{iteration}",
+        wandb_project=wandb_project,
+        wandb_run_name=f"{run_prefix}-curriculum-iter{iteration}",
         lambda_unc=kwargs.get("lambda_unc", 1.0),
         lambda_tool=kwargs.get("lambda_tool", 0.6),
         gamma_tool=kwargs.get("gamma_tool", 0.6),
@@ -97,6 +101,10 @@ def run_executor_training(
     
     iter_output_dir = Path(output_dir) / f"executor_iter{iteration}"
     
+    # Get wandb_project from kwargs or env
+    wandb_project = kwargs.get("wandb_project") or os.getenv("WANDB_PROJECT", "rl-hackathon-agent1")
+    run_prefix = os.getenv("WANDB_RUN_PREFIX", "agent1")
+    
     logger.info(f"=" * 60)
     logger.info(f"EXECUTOR AGENT TRAINING - Iteration {iteration}")
     logger.info(f"=" * 60)
@@ -116,8 +124,8 @@ def run_executor_training(
         use_lora=kwargs.get("use_lora", False),
         lora_r=kwargs.get("lora_r", 32),
         use_wandb=kwargs.get("use_wandb", True),
-        wandb_project=kwargs.get("wandb_project", "agent0-hackathon"),
-        wandb_run_name=f"executor_iter{iteration}",
+        wandb_project=wandb_project,
+        wandb_run_name=f"{run_prefix}-executor-iter{iteration}",
         use_adpo_scaling=kwargs.get("use_adpo_scaling", False),
     )
     
@@ -135,28 +143,35 @@ def run_coevolution(
     """
     Run the full Agent0 co-evolutionary loop.
     
-    Algorithm 1:
-    1. Initialize both agents from base model
-    2. For each iteration t:
-       a. Train Curriculum Agent (freeze Executor)
-       b. Train Executor Agent (freeze Curriculum)
+    Model Weight Flow:
+    ==================
+    Iteration 1:
+      - Curriculum: base_model → trained → curriculum_iter1/final_model
+      - Executor:   base_model → trained → executor_iter1/final_model
+    
+    Iteration 2+:
+      - Curriculum: curriculum_iter(t-1) → trained → curriculum_iter(t)
+      - Executor:   executor_iter(t-1)   → trained → executor_iter(t)
+    
+    During training:
+      - The agent being trained has TRAINABLE weights
+      - The other agent is FROZEN (used for reward/task generation)
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
     logger.info("=" * 70)
-    logger.info("AGENT0 CO-EVOLUTION FRAMEWORK")
+    logger.info("AGENT1 CO-EVOLUTION FRAMEWORK")
     logger.info("=" * 70)
     logger.info(f"Base Model: {model_name}")
     logger.info(f"Output Directory: {output_dir}")
     logger.info(f"Iterations: {num_iterations}")
-    logger.info(f"Curriculum Only: {curriculum_only}")
-    logger.info(f"Executor Only: {executor_only}")
     logger.info("=" * 70)
     
     # Track model paths across iterations
-    curriculum_model_path = None
-    executor_model_path = None
+    # These start as base model and get updated after each phase
+    curriculum_model_path = model_name  # Start from base
+    executor_model_path = model_name    # Start from base
     
     # Training history
     history = {
@@ -169,47 +184,64 @@ def run_coevolution(
     for iteration in range(1, num_iterations + 1):
         logger.info(f"\n{'#' * 70}")
         logger.info(f"# ITERATION {iteration}/{num_iterations}")
-        logger.info(f"{'#' * 70}\n")
+        logger.info(f"{'#' * 70}")
+        logger.info(f"  Curriculum weights from: {curriculum_model_path}")
+        logger.info(f"  Executor weights from:   {executor_model_path}")
+        logger.info("")
         
         iter_info = {
             "iteration": iteration,
-            "curriculum_model": None,
-            "executor_model": None,
+            "curriculum_model_input": curriculum_model_path,
+            "executor_model_input": executor_model_path,
+            "curriculum_model_output": None,
+            "executor_model_output": None,
         }
         
         # ====================================================================
-        # Phase 1: Curriculum Evolution (Algorithm 1, Lines 3-10)
+        # Phase 1: Curriculum Evolution
+        # - Curriculum: TRAINABLE (starts from curriculum_model_path)
+        # - Executor: FROZEN (used for computing p̂ rewards)
         # ====================================================================
         if not executor_only:
-            # Use base model for first iteration, previous executor for subsequent
-            exec_path = executor_model_path if iteration > 1 else model_name
+            logger.info("─" * 50)
+            logger.info("PHASE 1: Curriculum Evolution")
+            logger.info(f"  Training curriculum from: {curriculum_model_path}")
+            logger.info(f"  Frozen executor from:     {executor_model_path}")
+            logger.info("─" * 50)
             
-            curriculum_model_path = run_curriculum_training(
-                model_name=model_name if iteration == 1 else curriculum_model_path,
-                executor_model_path=exec_path,
+            new_curriculum_path = run_curriculum_training(
+                model_name=curriculum_model_path,  # Continue from previous curriculum
+                executor_model_path=executor_model_path,  # Frozen executor for rewards
                 output_dir=str(output_dir),
                 iteration=iteration,
                 **kwargs
             )
-            iter_info["curriculum_model"] = curriculum_model_path
-            logger.info(f"✅ Curriculum model saved: {curriculum_model_path}")
+            curriculum_model_path = new_curriculum_path
+            iter_info["curriculum_model_output"] = new_curriculum_path
+            logger.success(f"✅ Curriculum model saved: {new_curriculum_path}")
         
         # ====================================================================
-        # Phase 2: Executor Evolution (Algorithm 1, Lines 11-24)
+        # Phase 2: Executor Evolution
+        # - Curriculum: FROZEN (used to generate tasks)
+        # - Executor: TRAINABLE (starts from executor_model_path)
         # ====================================================================
         if not curriculum_only:
-            # Use base model for first iteration if curriculum_only was run separately
-            curr_path = curriculum_model_path or model_name
+            logger.info("─" * 50)
+            logger.info("PHASE 2: Executor Evolution")
+            logger.info(f"  Frozen curriculum from: {curriculum_model_path}")
+            logger.info(f"  Training executor from: {executor_model_path}")
+            logger.info("─" * 50)
             
-            executor_model_path = run_executor_training(
-                model_name=model_name if iteration == 1 else executor_model_path,
-                curriculum_model_path=curr_path,
+            new_executor_path = run_executor_training(
+                model_name=executor_model_path,  # Continue from previous executor
+                curriculum_model_path=curriculum_model_path,  # Frozen curriculum for task generation
                 output_dir=str(output_dir),
                 iteration=iteration,
                 **kwargs
             )
-            iter_info["executor_model"] = executor_model_path
-            logger.info(f"✅ Executor model saved: {executor_model_path}")
+            executor_model_path = new_executor_path
+            iter_info["executor_model_output"] = new_executor_path
+            logger.success(f"✅ Executor model saved: {new_executor_path}")
         
         history["iterations"].append(iter_info)
     
@@ -242,9 +274,10 @@ def parse_args():
     )
     
     # Model and output
+    # NOTE: Use instruct model (Qwen/Qwen3-0.6B), NOT base model (Qwen/Qwen3-0.6B-Base)
     parser.add_argument("--model_name", type=str, 
                         default=os.getenv("MODEL_ID", "Qwen/Qwen3-0.6B"),
-                        help="Base model name")
+                        help="Base model name (use instruct models, not *-Base)")
     parser.add_argument("--output_dir", type=str,
                         default=os.getenv("OUTPUT_DIR", "./outputs"),
                         help="Output directory")
@@ -327,57 +360,115 @@ def parse_args():
                         default=int(os.getenv("LORA_R", "32")),
                         help="LoRA rank")
     
-    # W&B
-    parser.add_argument("--no_wandb", action="store_true",
-                        help="Disable W&B logging")
+    # W&B settings
+    parser.add_argument("--use_wandb", action="store_true",
+                        default=os.getenv("USE_WANDB", "true").lower() == "true",
+                        help="Use Weights & Biases for logging")
     parser.add_argument("--wandb_project", type=str,
-                        default=os.getenv("WANDB_PROJECT", "agent0-hackathon"),
-                        help="W&B project")
+                        default=os.getenv("WANDB_PROJECT", "rl-hackathon-agent1"),
+                        help="W&B project name")
+    parser.add_argument("--wandb_run_name", type=str, default=None,
+                        help="W&B run name (default: auto-generated)")
     
-    # ADPO
-    parser.add_argument("--use_adpo_scaling", action="store_true",
-                        help="Enable ADPO-style advantage scaling")
+    args = parser.parse_args()
     
-    return parser.parse_args()
+    # Post-process args
+    # - Convert boolean flags from strings
+    # - Expand user home directory in paths
+    for key, value in vars(args).items():
+        if isinstance(value, str) and value.lower() in {"true", "false"}:
+            setattr(args, key, value.lower() == "true")
+        elif isinstance(value, str) and value.startswith("~/"):
+            expanded_path = str(Path.home() / value[2:])
+            setattr(args, key, expanded_path)
+    
+    return args
 
 
 def main():
-    """Main entry point."""
     args = parse_args()
     
-    # Convert args to kwargs
-    kwargs = {
+    # Override any settings from environment variables
+    # This allows for flexible configuration without changing code or command-line args
+    for key, value in vars(args).items():
+        env_value = os.getenv(key.upper())
+        if env_value is not None:
+            logger.info(f"Overriding '{key}' with environment variable")
+            if key in {"curriculum_only", "executor_only", "use_lora", "use_wandb"}:
+                # Boolean flags
+                setattr(args, key, env_value.lower() == "true")
+            elif key in {"iterations", "curriculum_max_steps", "executor_max_steps",
+                          "curriculum_batch_size", "executor_batch_size", 
+                          "curriculum_grad_accum", "executor_grad_accum", 
+                          "curriculum_k_rollouts", "executor_k_rollouts", 
+                          "executor_k_samples", "num_tasks"}:
+                # Integer/float settings
+                if "." in env_value:
+                    setattr(args, key, float(env_value))
+                else:
+                    setattr(args, key, int(env_value))
+            else:
+                # String settings
+                setattr(args, key, env_value)
+    
+    # Convert to dict for easier access
+    train_settings = {
+        "model_name": args.model_name,
+        "output_dir": args.output_dir,
+        "num_iterations": args.iterations,
+        "curriculum_only": args.curriculum_only,
+        "executor_only": args.executor_only,
         "num_prompts": args.num_prompts,
-        "num_tasks": args.num_tasks,
-        "curriculum_max_steps": args.curriculum_max_steps,
-        "curriculum_batch_size": args.curriculum_batch_size,
-        "curriculum_grad_accum": args.curriculum_grad_accum,
         "curriculum_k_rollouts": args.curriculum_k_rollouts,
-        "executor_max_steps": args.executor_max_steps,
-        "executor_batch_size": args.executor_batch_size,
-        "executor_grad_accum": args.executor_grad_accum,
-        "executor_k_rollouts": args.executor_k_rollouts,
-        "executor_k_samples": args.executor_k_samples,
+        "curriculum_max_steps": args.curriculum_max_steps,
         "learning_rate": args.learning_rate,
+        "per_device_batch_size": args.curriculum_batch_size,
+        "gradient_accumulation_steps": args.curriculum_grad_accum,
+        "use_lora": args.use_lora,
+        "lora_r": args.lora_r,
+        "use_wandb": args.use_wandb,
+        "wandb_project": args.wandb_project,
+        "executor_k_samples": args.executor_k_samples,
+        "num_tasks": args.num_tasks,
         "delta": args.delta,
         "lambda_unc": args.lambda_unc,
         "lambda_tool": args.lambda_tool,
         "gamma_tool": args.gamma_tool,
         "cap_tool": args.cap_tool,
-        "use_lora": args.use_lora,
-        "lora_r": args.lora_r,
-        "use_wandb": not args.no_wandb,
-        "wandb_project": args.wandb_project,
-        "use_adpo_scaling": args.use_adpo_scaling,
     }
     
+    # Log final settings
+    logger.info("=" * 70)
+    logger.info("FINAL TRAINING SETTINGS")
+    logger.info("=" * 70)
+    for key, value in train_settings.items():
+        logger.info(f"  {key}: {value}")
+    logger.info("=" * 70)
+    
+    # Run the co-evolutionary training loop
     run_coevolution(
         model_name=args.model_name,
         output_dir=args.output_dir,
         num_iterations=args.iterations,
         curriculum_only=args.curriculum_only,
         executor_only=args.executor_only,
-        **kwargs
+        num_prompts=args.num_prompts,
+        curriculum_k_rollouts=args.curriculum_k_rollouts,
+        curriculum_max_steps=args.curriculum_max_steps,
+        learning_rate=args.learning_rate,
+        per_device_batch_size=args.curriculum_batch_size,
+        gradient_accumulation_steps=args.curriculum_grad_accum,
+        use_lora=args.use_lora,
+        lora_r=args.lora_r,
+        use_wandb=args.use_wandb,
+        wandb_project=args.wandb_project,
+        executor_k_samples=args.executor_k_samples,
+        num_tasks=args.num_tasks,
+        delta=args.delta,
+        lambda_unc=args.lambda_unc,
+        lambda_tool=args.lambda_tool,
+        gamma_tool=args.gamma_tool,
+        cap_tool=args.cap_tool,
     )
 
 
