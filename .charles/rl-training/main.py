@@ -388,28 +388,8 @@ def parse_args():
 def main():
     args = parse_args()
     
-    # Override any settings from environment variables
-    # This allows for flexible configuration without changing code or command-line args
-    for key, value in vars(args).items():
-        env_value = os.getenv(key.upper())
-        if env_value is not None:
-            logger.info(f"Overriding '{key}' with environment variable")
-            if key in {"curriculum_only", "executor_only", "use_lora", "use_wandb"}:
-                # Boolean flags
-                setattr(args, key, env_value.lower() == "true")
-            elif key in {"iterations", "curriculum_max_steps", "executor_max_steps",
-                          "curriculum_batch_size", "executor_batch_size", 
-                          "curriculum_grad_accum", "executor_grad_accum", 
-                          "curriculum_k_rollouts", "executor_k_rollouts", 
-                          "executor_k_samples", "num_tasks"}:
-                # Integer/float settings
-                if "." in env_value:
-                    setattr(args, key, float(env_value))
-                else:
-                    setattr(args, key, int(env_value))
-            else:
-                # String settings
-                setattr(args, key, env_value)
+    # Note: Environment variables are already handled in parse_args() via os.getenv() defaults
+    # No need for additional override logic here
     
     # Convert to dict for easier access
     train_settings = {
@@ -422,13 +402,17 @@ def main():
         "curriculum_k_rollouts": args.curriculum_k_rollouts,
         "curriculum_max_steps": args.curriculum_max_steps,
         "learning_rate": args.learning_rate,
-        "per_device_batch_size": args.curriculum_batch_size,
-        "gradient_accumulation_steps": args.curriculum_grad_accum,
+        "curriculum_batch_size": args.curriculum_batch_size,
+        "curriculum_grad_accum": args.curriculum_grad_accum,
+        "executor_batch_size": args.executor_batch_size,
+        "executor_grad_accum": args.executor_grad_accum,
+        "executor_k_rollouts": args.executor_k_rollouts,
+        "executor_k_samples": args.executor_k_samples,
+        "executor_max_steps": args.executor_max_steps,
         "use_lora": args.use_lora,
         "lora_r": args.lora_r,
         "use_wandb": args.use_wandb,
         "wandb_project": args.wandb_project,
-        "executor_k_samples": args.executor_k_samples,
         "num_tasks": args.num_tasks,
         "delta": args.delta,
         "lambda_unc": args.lambda_unc,
@@ -446,30 +430,8 @@ def main():
     logger.info("=" * 70)
     
     # Run the co-evolutionary training loop
-    run_coevolution(
-        model_name=args.model_name,
-        output_dir=args.output_dir,
-        num_iterations=args.iterations,
-        curriculum_only=args.curriculum_only,
-        executor_only=args.executor_only,
-        num_prompts=args.num_prompts,
-        curriculum_k_rollouts=args.curriculum_k_rollouts,
-        curriculum_max_steps=args.curriculum_max_steps,
-        learning_rate=args.learning_rate,
-        per_device_batch_size=args.curriculum_batch_size,
-        gradient_accumulation_steps=args.curriculum_grad_accum,
-        use_lora=args.use_lora,
-        lora_r=args.lora_r,
-        use_wandb=args.use_wandb,
-        wandb_project=args.wandb_project,
-        executor_k_samples=args.executor_k_samples,
-        num_tasks=args.num_tasks,
-        delta=args.delta,
-        lambda_unc=args.lambda_unc,
-        lambda_tool=args.lambda_tool,
-        gamma_tool=args.gamma_tool,
-        cap_tool=args.cap_tool,
-    )
+    # Pass all settings via **train_settings (no duplicate positional args)
+    run_coevolution(**train_settings)
 
 
 if __name__ == "__main__":
