@@ -107,7 +107,7 @@ def test_grpo_trainer():
     # Note: effective_batch_size = per_device_train_batch_size * gradient_accumulation_steps * num_gpus
     # This must be divisible by num_generations
     config = GRPOConfig(
-        output_dir="./debug_grpo_output",
+        output_dir="./outputs/debug_grpo_output",
         num_generations=2,  # Minimum for GRPO
         max_completion_length=512,  # TRL 0.19+ uses this instead of max_new_tokens
         temperature=1.0,
