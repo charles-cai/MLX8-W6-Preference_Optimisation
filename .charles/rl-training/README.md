@@ -1171,3 +1171,7 @@ uv run train_executor.py \
 Per the Agent0 paper, this co-evolutionary loop drives improvement in both agents over multiple iterations.
 
 ---
+## Final Notes
+
+1. Other teams' submissions to GitHub/HuggingFace saved at MacBook Pro: `/Users/charles/_Projects/_github/_rl_hack`
+2. hackathon finalists info stored in [./hackathon-winners]
